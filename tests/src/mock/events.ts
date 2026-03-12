@@ -1,0 +1,163 @@
+export type Category = "music" | "food" | "fitness" | "social" | "arts";
+
+export type EventPin = {
+  id: string;
+  title: string;
+  venue: string;
+  timeLabel: string;
+  photoUrl: string;
+  location: [number, number];
+  category: Category;
+  spontaneityScore: number;
+  crowdLabel: "Low-key" | "Good vibe" | "Packed";
+  tags: string[];
+};
+
+export const DEFAULT_LOCATION: [number, number] = [19.076, 72.8777];
+
+export const MOCK_EVENTS: EventPin[] = [
+  {
+    id: "1",
+    title: "Rooftop Indie Set",
+    venue: "Skyline Taproom",
+    timeLabel: "8:30 PM",
+    photoUrl: "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?auto=format&fit=crop&w=420&q=80",
+    location: [19.0784, 72.882],
+    category: "music",
+    spontaneityScore: 94,
+    crowdLabel: "Good vibe",
+    tags: ["Indie", "Open-air", "No cover"],
+  },
+  {
+    id: "2",
+    title: "Midnight Ramen Pop-up",
+    venue: "Nomad Lane",
+    timeLabel: "9:15 PM",
+    photoUrl: "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?auto=format&fit=crop&w=420&q=80",
+    location: [19.0728, 72.8732],
+    category: "food",
+    spontaneityScore: 91,
+    crowdLabel: "Packed",
+    tags: ["Street food", "Limited bowls", "Quick"],
+  },
+  {
+    id: "3",
+    title: "Sunset Core Blast",
+    venue: "Harbor Steps",
+    timeLabel: "7:10 PM",
+    photoUrl: "https://images.unsplash.com/photo-1517836357463-d25dfeac3438?auto=format&fit=crop&w=420&q=80",
+    location: [19.0808, 72.8701],
+    category: "fitness",
+    spontaneityScore: 87,
+    crowdLabel: "Low-key",
+    tags: ["Bodyweight", "Bring mat", "35 min"],
+  },
+  {
+    id: "4",
+    title: "Board Game Sprint",
+    venue: "Bean Circuit Cafe",
+    timeLabel: "8:00 PM",
+    photoUrl: "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=420&q=80",
+    location: [19.0753, 72.8845],
+    category: "social",
+    spontaneityScore: 82,
+    crowdLabel: "Good vibe",
+    tags: ["Meet new people", "Casual", "Snacks"],
+  },
+  {
+    id: "5",
+    title: "Tiny Gallery Night",
+    venue: "Studio 17",
+    timeLabel: "9:45 PM",
+    photoUrl: "https://images.unsplash.com/photo-1460661419201-fd4cecdf8a8b?auto=format&fit=crop&w=420&q=80",
+    location: [19.0699, 72.8808],
+    category: "arts",
+    spontaneityScore: 88,
+    crowdLabel: "Low-key",
+    tags: ["Local artists", "Live sketch", "Quiet"],
+  },
+  {
+    id: "6",
+    title: "Vinyl + Espresso",
+    venue: "Mono House",
+    timeLabel: "10:20 PM",
+    photoUrl: "https://images.unsplash.com/photo-1511379938547-c1f69419868d?auto=format&fit=crop&w=420&q=80",
+    location: [19.0749, 72.868],
+    category: "music",
+    spontaneityScore: 85,
+    crowdLabel: "Good vibe",
+    tags: ["Lo-fi", "Coffee", "Chill"],
+  },
+  {
+    id: "7",
+    title: "Marine Drive Busk Circle",
+    venue: "Marine Drive Promenade",
+    timeLabel: "7:45 PM",
+    photoUrl: "https://images.unsplash.com/photo-1533106418989-88406c7cc8ca?auto=format&fit=crop&w=420&q=80",
+    location: [18.9432, 72.8231],
+    category: "music",
+    spontaneityScore: 89,
+    crowdLabel: "Good vibe",
+    tags: ["Acoustic", "Sunset", "Street set"],
+  },
+  {
+    id: "8",
+    title: "Bandra Night Bites Crawl",
+    venue: "Pali Naka, Bandra West",
+    timeLabel: "9:00 PM",
+    photoUrl: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=420&q=80",
+    location: [19.0622, 72.8296],
+    category: "food",
+    spontaneityScore: 93,
+    crowdLabel: "Packed",
+    tags: ["Street eats", "Quick bites", "Walkable"],
+  },
+  {
+    id: "9",
+    title: "Worli Seaface Run Club",
+    venue: "Worli Seaface",
+    timeLabel: "6:40 PM",
+    photoUrl: "https://images.unsplash.com/photo-1476480862126-209bfaa8edc8?auto=format&fit=crop&w=420&q=80",
+    location: [19.0096, 72.8154],
+    category: "fitness",
+    spontaneityScore: 86,
+    crowdLabel: "Good vibe",
+    tags: ["5K", "Beginner friendly", "Coastal"],
+  },
+  {
+    id: "10",
+    title: "Kala Ghoda Sketch Walk",
+    venue: "Kala Ghoda Art District",
+    timeLabel: "8:10 PM",
+    photoUrl: "https://images.unsplash.com/photo-1513364776144-60967b0f800f?auto=format&fit=crop&w=420&q=80",
+    location: [18.9281, 72.8326],
+    category: "arts",
+    spontaneityScore: 84,
+    crowdLabel: "Low-key",
+    tags: ["Sketching", "Architecture", "Gallery lane"],
+  },
+  {
+    id: "11",
+    title: "Powai Terrace Mixer",
+    venue: "Hiranandani, Powai",
+    timeLabel: "8:50 PM",
+    photoUrl: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=420&q=80",
+    location: [19.1176, 72.906],
+    category: "social",
+    spontaneityScore: 88,
+    crowdLabel: "Good vibe",
+    tags: ["Meet new people", "Open group", "Casual"],
+  },
+  {
+    id: "12",
+    title: "Juhu Beach Jam",
+    venue: "Juhu Chowpatty",
+    timeLabel: "10:00 PM",
+    photoUrl: "https://images.unsplash.com/photo-1469474968028-56623f02e42e?auto=format&fit=crop&w=420&q=80",
+    location: [19.1, 72.8262],
+    category: "music",
+    spontaneityScore: 90,
+    crowdLabel: "Packed",
+    tags: ["Beach", "Percussion", "Night breeze"],
+  },
+];
