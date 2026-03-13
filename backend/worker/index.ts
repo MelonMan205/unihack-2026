@@ -1,9 +1,10 @@
+import urlsConfig from "./urls.json";
+
 interface Env {
   GEMINI_API_KEY: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   SUPABASE_KEY?: string;
-  URLS_JSON?: string;
 }
 
 declare const HTMLRewriter: {
@@ -153,14 +154,12 @@ async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; 
   return { processed, inserted };
 }
 
-function parseUrlsFromEnv(env: Env): string[] {
-  if (!env.URLS_JSON) return [];
-  try {
-    const parsed = JSON.parse(env.URLS_JSON);
-    return Array.isArray(parsed) ? parsed.filter((u) => typeof u === "string") : [];
-  } catch {
-    return [];
-  }
+function getConfiguredUrls(): string[] {
+  const rawUrls = Array.isArray((urlsConfig as any)?.urls) ? (urlsConfig as any).urls : [];
+  return rawUrls
+    .filter((u: unknown) => typeof u === "string")
+    .map((u: string) => u.trim())
+    .filter((u: string) => u.length > 0);
 }
 
 function isManualTriggerPath(pathname: string): boolean {
@@ -171,7 +170,7 @@ function isManualTriggerPath(pathname: string): boolean {
 
 export default {
   async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
-    const urls = parseUrlsFromEnv(env);
+    const urls = getConfiguredUrls();
     if (!urls.length) return;
     await runCrawl(urls, env);
   },
@@ -180,10 +179,10 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && isManualTriggerPath(url.pathname)) {
-      const urls = parseUrlsFromEnv(env);
+      const urls = getConfiguredUrls();
       if (!urls.length) {
         return Response.json(
-          { ok: false, error: "No URLs configured. Set URLS_JSON secret for manual/cron runs." },
+          { ok: false, error: "No URLs configured in urls.json." },
           { status: 400 },
         );
       }
@@ -208,11 +207,11 @@ export default {
     }
 
     const payload = (await request.json().catch(() => ({}))) as { urls?: string[] };
-    const urls = Array.isArray(payload.urls) ? payload.urls : parseUrlsFromEnv(env);
+    const urls = Array.isArray(payload.urls) ? payload.urls : getConfiguredUrls();
 
     if (!urls.length) {
       return Response.json(
-        { ok: false, error: "No urls provided. Send { urls: string[] } or set URLS_JSON secret." },
+        { ok: false, error: "No urls provided. Send { urls: string[] } or configure urls.json." },
         { status: 400 },
       );
     }
