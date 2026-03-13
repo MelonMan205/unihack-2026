@@ -219,7 +219,7 @@ export default function HomePage() {
       <Sheet open={Boolean(selectedEvent)} onOpenChange={(open) => !open && setSelectedEvent(null)}>
         <SheetContent
           side="bottom"
-          className="mx-auto max-h-[80dvh] max-w-3xl overflow-y-auto rounded-t-[20px] border-white/35 bg-white/82 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-5 backdrop-blur-2xl sm:px-5"
+          className="mx-auto max-h-[80dvh] max-w-3xl overflow-y-auto rounded-t-[20px] border-white/35 bg-white/82 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-5 backdrop-blur-2xl sm:px-5 z-[1300]"
         >
           {selectedEvent ? (
             <>

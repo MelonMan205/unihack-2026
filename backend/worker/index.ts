@@ -28,6 +28,7 @@ type EventPin = {
   tags?: string[];
   description?: string;
   source_url: string;
+  visit_more_url?: string;
   created_at?: string;
 };
 
@@ -38,7 +39,7 @@ const GEMINI_URL =
  * Max tokens budget for the full prompt.
  * Adjust this based on observed latency/errors.
  */
-const MAX_PROMPT_TOKENS = 12000;
+const MAX_PROMPT_TOKENS = 8000;
 
 /**
  * Approx chars per token for English/web text.
@@ -50,6 +51,17 @@ const CHARS_PER_TOKEN_ESTIMATE = 4;
  * Reserve tokens for instruction/schema overhead (non-HTML text).
  */
 const PROMPT_OVERHEAD_TOKENS = 1200;
+
+/**
+ * Keep enrichment prompts tighter than extraction prompts to avoid 524s.
+ */
+const MAX_POPULATION_PROMPT_TOKENS = 6000;
+const POPULATION_PROMPT_OVERHEAD_TOKENS = 1600;
+const MAX_POPULATION_SOURCE_CHARS_TOTAL = Math.max(
+  1,
+  (MAX_POPULATION_PROMPT_TOKENS - POPULATION_PROMPT_OVERHEAD_TOKENS) * CHARS_PER_TOKEN_ESTIMATE,
+);
+const MAX_SOURCE_CONTENT_CHARS_PER_EVENT = 2500;
 
 /**
  * Derived max HTML chars allowed before calling Gemini.
@@ -73,12 +85,36 @@ function clipForLog(text: string, max = LOG_PREVIEW_CHARS): string {
   return `${text.slice(0, max)}... [truncated ${text.length - max} chars]`;
 }
 
+function compactWebText(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function buildPrompt(cleanedHtml: string): string {
   return [
     "Extract events and venues from this HTML.",
     "Return STRICT JSON only in this shape:",
-    '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","created_at":"string?"}],"links":["string?"]}',
+    '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","visit_more_url":"string?","created_at":"string?"}],"links":["string?"]}',
     `HTML:\n${cleanedHtml}`,
+  ].join("\n");
+}
+
+function buildPopulationPrompt(payload: string): string {
+  return [
+    "You are enriching extracted events with source content.",
+    "Use each event's source_content to infer missing details and improve quality.",
+    "For each event return only these fields: description, crowd_label, tags, spontaneity_score.",
+    "Rules:",
+    '- description: concise 1-3 sentences; use source_content facts; if unknown return "".',
+    '- crowd_label: one of ["quiet","moderate","busy","packed"] or "" if unknown.',
+    "- tags: 2-6 short lowercase tags.",
+    "- spontaneity_score: integer 0-100 based on effort/planning needed (higher = more spontaneous).",
+    "Return STRICT JSON only in this exact shape:",
+    '{"events":[{"event_index":"number","description":"string","crowd_label":"string","tags":["string"],"spontaneity_score":"number"}]}',
+    `INPUT:\n${payload}`,
   ].join("\n");
 }
 
@@ -123,13 +159,20 @@ async function sanitizeHTML(source: Response): Promise<string> {
     .on("noscript", { element: (el: HtmlElement) => el.remove() })
     .on("nav", { element: (el: HtmlElement) => el.remove() })
     .on("footer", { element: (el: HtmlElement) => el.remove() })
-    .on("aside", { element: (el: HtmlElement) => el.remove() });
+    .on("aside", { element: (el: HtmlElement) => el.remove() })
+    .on("svg", { element: (el: HtmlElement) => el.remove() })
+    .on("form", { element: (el: HtmlElement) => el.remove() })
+    .on("header", { element: (el: HtmlElement) => el.remove() });
 
   const rewritten = rewriter.transform(source);
-  const text = await rewritten.text();
+  const raw = await rewritten.text();
+  const compacted = compactWebText(raw);
+  const text = compacted.slice(0, MAX_HTML_CHARS * 2);
   console.log("[sanitizeHTML] Sanitization complete", {
-    lengthChars: text.length,
-    tokensEst: estimateTokensFromChars(text.length),
+    rawChars: raw.length,
+    compactedChars: compacted.length,
+    finalChars: text.length,
+    finalTokensEst: estimateTokensFromChars(text.length),
   });
   return text;
 }
@@ -163,9 +206,85 @@ function coerceEvents(payload: any): EventPin[] {
         ? item.tags.filter((x: any) => typeof x === "string")
         : undefined,
       description: item.description,
-      source_url: "",
+      source_url: typeof item.source_url === "string" ? item.source_url : "",
+      visit_more_url: typeof item.visit_more_url === "string" ? item.visit_more_url : undefined,
       created_at: item.created_at,
     }));
+}
+
+type EventPopulationPatch = {
+  event_index: number;
+  description?: string;
+  crowd_label?: string;
+  tags?: string[];
+  spontaneity_score?: number;
+};
+
+type CrawlResult = {
+  processed: number;
+  inserted: number;
+  events?: Omit<EventPin, "visit_more_url">[];
+};
+
+function extractJsonPayload(text: string): any | null {
+  const maybeJson = extractFirstJsonObject(text);
+  if (!maybeJson) return null;
+  try {
+    return JSON.parse(maybeJson);
+  } catch (err) {
+    console.error("[extractJsonPayload] Failed to parse extracted JSON object", {
+      extractedPreview: clipForLog(maybeJson),
+      err: String(err),
+    });
+    return null;
+  }
+}
+
+function resolveUrl(baseUrl: string, maybeUrl?: string): string {
+  const value = (maybeUrl ?? "").trim();
+  if (!value) return baseUrl;
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
+type PopulationSourceItem = {
+  event_index: number;
+  title: string;
+  venue: string;
+  time_label: string;
+  location: string;
+  category: string;
+  source_url: string;
+  source_content: string;
+};
+
+function applyPopulationSourceBudget(items: PopulationSourceItem[]): PopulationSourceItem[] {
+  if (!items.length) return items;
+
+  const perEventBudget = Math.max(
+    400,
+    Math.min(
+      MAX_SOURCE_CONTENT_CHARS_PER_EVENT,
+      Math.floor(MAX_POPULATION_SOURCE_CHARS_TOTAL / items.length),
+    ),
+  );
+
+  const budgeted = items.map((item) => ({
+    ...item,
+    source_content: item.source_content.slice(0, perEventBudget),
+  }));
+
+  console.log("[applyPopulationSourceBudget] Applied source budget", {
+    eventCount: items.length,
+    perEventBudget,
+    totalBudgetChars: MAX_POPULATION_SOURCE_CHARS_TOTAL,
+    totalAfterChars: budgeted.reduce((acc, item) => acc + item.source_content.length, 0),
+  });
+
+  return budgeted;
 }
 
 async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin[]> {
@@ -234,20 +353,9 @@ async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin
     textLength: rawText.length,
   });
 
-  const maybeJson = extractFirstJsonObject(rawText);
-  if (!maybeJson) {
+  const parsed = extractJsonPayload(rawText);
+  if (!parsed) {
     console.warn("[callGemini] No JSON object found in Gemini candidate text");
-    return [];
-  }
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(maybeJson);
-  } catch (err) {
-    console.error("[callGemini] Failed to parse extracted JSON object", {
-      extractedPreview: clipForLog(maybeJson),
-      err: String(err),
-    });
     return [];
   }
 
@@ -258,6 +366,172 @@ async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin
   const events = coerceEvents(parsed);
   console.log("[callGemini] Parsed events count:", events.length);
   return events;
+}
+
+async function enrichEventsWithPopulationLayer(
+  events: EventPin[],
+  fallbackSourceUrl: string,
+  apiKey: string,
+): Promise<EventPin[]> {
+  if (!events.length) return events;
+  if (!apiKey) {
+    throw new Error("Missing GEMINI_API_KEY in environment");
+  }
+
+  const sourcePayloadRaw = await Promise.all(
+    events.map(async (event, index) => {
+      const preferredUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
+      let sourceContent = "";
+
+      try {
+        const res = await fetch(preferredUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+        if (res.ok) {
+          sourceContent = await sanitizeHTML(res);
+        } else {
+          console.warn("[enrichEventsWithPopulationLayer] Non-OK source content response", {
+            eventIndex: index,
+            status: res.status,
+            preferredUrl,
+          });
+        }
+      } catch (err) {
+        console.warn("[enrichEventsWithPopulationLayer] Failed to fetch source content", {
+          eventIndex: index,
+          preferredUrl,
+          err: String(err),
+        });
+      }
+
+      return {
+        event_index: index,
+        title: event.title,
+        venue: event.venue ?? "",
+        time_label: event.time_label ?? "",
+        location: event.location ?? "",
+        category: event.category ?? "",
+        source_url: preferredUrl,
+        source_content: compactWebText(sourceContent).slice(0, MAX_SOURCE_CONTENT_CHARS_PER_EVENT),
+      };
+    }),
+  );
+  let sourcePayload = applyPopulationSourceBudget(sourcePayloadRaw);
+
+  console.log("[enrichEventsWithPopulationLayer] Source payload built", {
+    eventCount: events.length,
+    payloadChars: JSON.stringify({ events: sourcePayload }).length,
+    sourceUrls: sourcePayload.map((item) => item.source_url),
+  });
+
+  let prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
+  let promptTokensEst = estimateTokensFromChars(prompt.length);
+
+  if (promptTokensEst > MAX_POPULATION_PROMPT_TOKENS) {
+    let perEventBudget = Math.max(200, Math.floor(MAX_SOURCE_CONTENT_CHARS_PER_EVENT / 2));
+    while (promptTokensEst > MAX_POPULATION_PROMPT_TOKENS && perEventBudget >= 200) {
+      sourcePayload = sourcePayload.map((item) => ({
+        ...item,
+        source_content: item.source_content.slice(0, perEventBudget),
+      }));
+      prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
+      promptTokensEst = estimateTokensFromChars(prompt.length);
+      perEventBudget = Math.floor(perEventBudget * 0.7);
+    }
+  }
+
+  console.log("[enrichEventsWithPopulationLayer] Enrichment prompt ready", {
+    promptChars: prompt.length,
+    promptTokensEst,
+    maxPopulationPromptTokens: MAX_POPULATION_PROMPT_TOKENS,
+  });
+
+  const startedAt = Date.now();
+  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    }),
+  });
+  const durationMs = Date.now() - startedAt;
+
+  console.log("[enrichEventsWithPopulationLayer] Gemini response status", {
+    status: res.status,
+    durationMs,
+  });
+
+  const responseText = await res.text();
+  console.log("[enrichEventsWithPopulationLayer] Gemini raw response", {
+    status: res.status,
+    durationMs,
+    bodyPreview: clipForLog(responseText),
+  });
+  if (!res.ok) {
+    throw new Error(`Gemini enrichment request failed: ${res.status} :: ${clipForLog(responseText, 1000)}`);
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(responseText);
+  } catch (err) {
+    console.error("[enrichEventsWithPopulationLayer] Failed to parse Gemini JSON response", err);
+    return events;
+  }
+
+  const rawText = getGeminiText(data);
+  console.log("[enrichEventsWithPopulationLayer] Gemini candidate text preview", {
+    textLength: rawText.length,
+    textPreview: clipForLog(rawText),
+  });
+  const parsed = extractJsonPayload(rawText);
+  const patchesRaw = Array.isArray(parsed?.events) ? parsed.events : [];
+  const patches: EventPopulationPatch[] = patchesRaw
+    .map((item: any) => ({
+      event_index: typeof item?.event_index === "number" ? item.event_index : -1,
+      description: typeof item?.description === "string" ? item.description : undefined,
+      crowd_label: typeof item?.crowd_label === "string" ? item.crowd_label : undefined,
+      tags: Array.isArray(item?.tags) ? item.tags.filter((x: any) => typeof x === "string") : undefined,
+      spontaneity_score: typeof item?.spontaneity_score === "number" ? item.spontaneity_score : undefined,
+    }))
+    .filter((patch) => patch.event_index >= 0 && patch.event_index < events.length);
+
+  console.log("[enrichEventsWithPopulationLayer] Parsed enrichment patches", {
+    patchesRawCount: patchesRaw.length,
+    validPatchesCount: patches.length,
+    patchesPreview: clipForLog(JSON.stringify(patches)),
+  });
+
+  if (!patches.length) {
+    console.warn("[enrichEventsWithPopulationLayer] No enrichment patches returned");
+    return events;
+  }
+
+  const patchByIndex = new Map<number, EventPopulationPatch>();
+  for (const patch of patches) patchByIndex.set(patch.event_index, patch);
+
+  const enriched = events.map((event, index) => {
+    const patch = patchByIndex.get(index);
+    const resolvedSourceUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
+    if (!patch) return { ...event, source_url: resolvedSourceUrl };
+    return {
+      ...event,
+      source_url: resolvedSourceUrl,
+      description: patch.description ?? event.description,
+      crowd_label: patch.crowd_label ?? event.crowd_label,
+      tags: patch.tags ?? event.tags,
+      spontaneity_score: patch.spontaneity_score ?? event.spontaneity_score,
+    };
+  });
+
+  console.log("[enrichEventsWithPopulationLayer] Enrichment merge complete", {
+    totalEvents: enriched.length,
+    enrichedWithDescription: enriched.filter((e) => Boolean(e.description)).length,
+    enrichedWithCrowdLabel: enriched.filter((e) => Boolean(e.crowd_label)).length,
+    enrichedWithTags: enriched.filter((e) => Array.isArray(e.tags) && e.tags.length > 0).length,
+    enrichedWithSpontaneity: enriched.filter((e) => typeof e.spontaneity_score === "number").length,
+    enrichedPreview: clipForLog(JSON.stringify(enriched)),
+  });
+
+  return enriched;
 }
 
 async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<void> {
@@ -290,9 +564,12 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
   }
 }
 
-async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; inserted: number }> {
+async function runCrawl(urls: string[], env: Env, includeEventsInResult = false): Promise<CrawlResult> {
   let processed = 0;
   let inserted = 0;
+  let eventsForResult: Omit<EventPin, "visit_more_url">[] | undefined = includeEventsInResult
+    ? []
+    : undefined;
   console.log("[runCrawl] Starting crawl. URL count:", urls.length);
 
   if (!urls.length) {
@@ -320,18 +597,30 @@ async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; 
     const events = await callGemini(cleaned, env.GEMINI_API_KEY);
     console.log("[runCrawl] Events extracted for", selectedUrl, ":", events.length);
 
-    const eventsWithSource = events.map((event) => ({ ...event, source_url: selectedUrl }));
-    await insertEventsToSupabase(eventsWithSource, env);
+    const populatedEvents = await enrichEventsWithPopulationLayer(events, selectedUrl, env.GEMINI_API_KEY);
+    const eventsForInsert = populatedEvents.map(({ visit_more_url: _omit, ...event }) => event);
+    console.log("[runCrawl] Population layer complete", {
+      selectedUrl,
+      extractedCount: events.length,
+      enrichedCount: eventsForInsert.length,
+      enrichedPreview: clipForLog(JSON.stringify(eventsForInsert)),
+    });
+
+    await insertEventsToSupabase(eventsForInsert, env);
+
+    if (includeEventsInResult) {
+      eventsForResult = eventsForInsert;
+    }
 
     processed = 1;
-    inserted = eventsWithSource.length;
+    inserted = eventsForInsert.length;
     console.log("[runCrawl] Completed URL:", selectedUrl, "processed:", processed, "inserted:", inserted);
   } catch (err) {
     console.error("[runCrawl] Error processing url:", selectedUrl, err);
   }
 
   console.log("[runCrawl] Finished crawl. Processed:", processed, "Inserted:", inserted);
-  return { processed, inserted };
+  return { processed, inserted, events: eventsForResult };
 }
 
 function getConfiguredUrls(): string[] {
@@ -379,17 +668,14 @@ export default {
 
       try {
         console.log("[manual] Starting crawl");
-        const result = await runCrawl(urls, env);
+        const result = await runCrawl(urls, env, true);
         console.log("[manual] Crawl finished:", result);
-
-        return new Response(
-          [
-            "Manual scrape complete.",
-            `Processed URLs: ${result.processed}`,
-            `Inserted events: ${result.inserted}`,
-          ].join("\n"),
-          { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } },
-        );
+        return Response.json({
+          ok: true,
+          processed: result.processed,
+          inserted: result.inserted,
+          events: result.events ?? [],
+        });
       } catch (err) {
         console.error("[manual] Crawl failed:", err);
         return Response.json(

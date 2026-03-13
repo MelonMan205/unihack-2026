@@ -52,6 +52,12 @@ body {
   animation: mapFade 900ms ease-out;
 }
 
+.apple-map .leaflet-control-container .leaflet-control-zoom {
+  /* Desktop/web default: tuck under top hero */
+  margin-top: 96px;
+  margin-left: 16px;
+}
+
 .apple-map .leaflet-control-zoom {
   border: none !important;
   border-radius: var(--radius-control) !important;
@@ -229,8 +235,11 @@ body {
 }
 
 @media (max-width: 640px) {
-  .apple-map .leaflet-control-zoom {
-    margin-bottom: 140px;
-    margin-right: 10px;
+  .apple-map .leaflet-control-container .leaflet-top.leaflet-left {
+    /* Move zoom controls to bottom-right on mobile so they are not hidden by the top hero card */
+    top: auto;
+    left: auto;
+    right: 16px;
+    bottom: 152px;
   }
 }
