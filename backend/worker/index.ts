@@ -194,6 +194,12 @@ type EventPopulationPatch = {
   spontaneity_score?: number;
 };
 
+type CrawlResult = {
+  processed: number;
+  inserted: number;
+  events?: Omit<EventPin, "visit_more_url">[];
+};
+
 function extractJsonPayload(text: string): any | null {
   const maybeJson = extractFirstJsonObject(text);
   if (!maybeJson) return null;
@@ -346,7 +352,18 @@ async function enrichEventsWithPopulationLayer(
     }),
   );
 
+  console.log("[enrichEventsWithPopulationLayer] Source payload built", {
+    eventCount: events.length,
+    payloadChars: JSON.stringify({ events: sourcePayload }).length,
+    sourceUrls: sourcePayload.map((item) => item.source_url),
+  });
+
   const prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
+  console.log("[enrichEventsWithPopulationLayer] Enrichment prompt ready", {
+    promptChars: prompt.length,
+    promptTokensEst: estimateTokensFromChars(prompt.length),
+  });
+
   const startedAt = Date.now();
   const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
     method: "POST",
@@ -363,6 +380,11 @@ async function enrichEventsWithPopulationLayer(
   });
 
   const responseText = await res.text();
+  console.log("[enrichEventsWithPopulationLayer] Gemini raw response", {
+    status: res.status,
+    durationMs,
+    bodyPreview: clipForLog(responseText),
+  });
   if (!res.ok) {
     throw new Error(`Gemini enrichment request failed: ${res.status} :: ${clipForLog(responseText, 1000)}`);
   }
@@ -376,6 +398,10 @@ async function enrichEventsWithPopulationLayer(
   }
 
   const rawText = getGeminiText(data);
+  console.log("[enrichEventsWithPopulationLayer] Gemini candidate text preview", {
+    textLength: rawText.length,
+    textPreview: clipForLog(rawText),
+  });
   const parsed = extractJsonPayload(rawText);
   const patchesRaw = Array.isArray(parsed?.events) ? parsed.events : [];
   const patches: EventPopulationPatch[] = patchesRaw
@@ -388,6 +414,12 @@ async function enrichEventsWithPopulationLayer(
     }))
     .filter((patch) => patch.event_index >= 0 && patch.event_index < events.length);
 
+  console.log("[enrichEventsWithPopulationLayer] Parsed enrichment patches", {
+    patchesRawCount: patchesRaw.length,
+    validPatchesCount: patches.length,
+    patchesPreview: clipForLog(JSON.stringify(patches)),
+  });
+
   if (!patches.length) {
     console.warn("[enrichEventsWithPopulationLayer] No enrichment patches returned");
     return events;
@@ -396,7 +428,7 @@ async function enrichEventsWithPopulationLayer(
   const patchByIndex = new Map<number, EventPopulationPatch>();
   for (const patch of patches) patchByIndex.set(patch.event_index, patch);
 
-  return events.map((event, index) => {
+  const enriched = events.map((event, index) => {
     const patch = patchByIndex.get(index);
     const resolvedSourceUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
     if (!patch) return { ...event, source_url: resolvedSourceUrl };
@@ -409,6 +441,17 @@ async function enrichEventsWithPopulationLayer(
       spontaneity_score: patch.spontaneity_score ?? event.spontaneity_score,
     };
   });
+
+  console.log("[enrichEventsWithPopulationLayer] Enrichment merge complete", {
+    totalEvents: enriched.length,
+    enrichedWithDescription: enriched.filter((e) => Boolean(e.description)).length,
+    enrichedWithCrowdLabel: enriched.filter((e) => Boolean(e.crowd_label)).length,
+    enrichedWithTags: enriched.filter((e) => Array.isArray(e.tags) && e.tags.length > 0).length,
+    enrichedWithSpontaneity: enriched.filter((e) => typeof e.spontaneity_score === "number").length,
+    enrichedPreview: clipForLog(JSON.stringify(enriched)),
+  });
+
+  return enriched;
 }
 
 async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<void> {
@@ -441,9 +484,10 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
   }
 }
 
-async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; inserted: number }> {
+async function runCrawl(urls: string[], env: Env, includeEventsInResult = false): Promise<CrawlResult> {
   let processed = 0;
   let inserted = 0;
+  let eventsForResult: Omit<EventPin, "visit_more_url">[] | undefined = undefined;
   console.log("[runCrawl] Starting crawl. URL count:", urls.length);
 
   if (!urls.length) {
@@ -473,7 +517,18 @@ async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; 
 
     const populatedEvents = await enrichEventsWithPopulationLayer(events, selectedUrl, env.GEMINI_API_KEY);
     const eventsForInsert = populatedEvents.map(({ visit_more_url: _omit, ...event }) => event);
+    console.log("[runCrawl] Population layer complete", {
+      selectedUrl,
+      extractedCount: events.length,
+      enrichedCount: eventsForInsert.length,
+      enrichedPreview: clipForLog(JSON.stringify(eventsForInsert)),
+    });
+
     await insertEventsToSupabase(eventsForInsert, env);
+
+    if (includeEventsInResult) {
+      eventsForResult = eventsForInsert;
+    }
 
     processed = 1;
     inserted = eventsForInsert.length;
@@ -483,7 +538,7 @@ async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; 
   }
 
   console.log("[runCrawl] Finished crawl. Processed:", processed, "Inserted:", inserted);
-  return { processed, inserted };
+  return { processed, inserted, events: eventsForResult };
 }
 
 function getConfiguredUrls(): string[] {
@@ -531,17 +586,9 @@ export default {
 
       try {
         console.log("[manual] Starting crawl");
-        const result = await runCrawl(urls, env);
+        const result = await runCrawl(urls, env, true);
         console.log("[manual] Crawl finished:", result);
-
-        return new Response(
-          [
-            "Manual scrape complete.",
-            `Processed URLs: ${result.processed}`,
-            `Inserted events: ${result.inserted}`,
-          ].join("\n"),
-          { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } },
-        );
+        return Response.json({ ok: true, ...result });
       } catch (err) {
         console.error("[manual] Crawl failed:", err);
         return Response.json(
