@@ -1,134 +1,281 @@
-// commit
-export default {
-  async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
-    console.log("[scheduled] Worker triggered");
-    const urls = parseUrlsFromEnv(env);
-    console.log("[scheduled] URLs from env:", urls);
+import urlsConfig from "./urls.json";
 
-    if (!urls.length) {
-      console.warn("[scheduled] No URLs found in env.URLS_JSON");
-      return;
-    }
+interface Env {
+  GEMINI_API_KEY: string;
+  SUPABASE_URL: string;
+  SUPABASE_SERVICE_ROLE_KEY: string;
+  SUPABASE_KEY?: string;
+}
 
-    try {
-      const result = await runCrawl(urls, env);
-      console.log("[scheduled] runCrawl result:", result);
-    } catch (err) {
-      console.error("[scheduled] Error in runCrawl:", err);
-    }
-  },
-
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const method = request.method;
-    const url = new URL(request.url);
-
-    console.log("[fetch] Worker fetch triggered");
-    console.log("[fetch] Method:", method);
-    console.log("[fetch] Path:", url.pathname);
-
-    // /manual must NOT be implemented
-    if (url.pathname === "/manual") {
-      console.warn("[fetch] /manual endpoint accessed, but it is not implemented.");
-      return Response.json(
-        { ok: false, error: "/manual endpoint is not implemented." },
-        { status: 404 },
-      );
-    }
-
-    if (method === "GET") {
-      return Response.json({ ok: true, message: "Worker is running" });
-    }
-
-    if (method !== "POST") {
-      console.warn("[fetch] Method not allowed:", method);
-      return new Response("Method Not Allowed", { status: 405 });
-    }
-
-    let payload: { urls?: string[] } = {};
-    try {
-      payload = await request.json();
-      console.log("[fetch] Incoming payload:", payload);
-    } catch (err) {
-      console.warn("[fetch] Failed to parse JSON payload:", err);
-    }
-
-    const urls = Array.isArray(payload.urls) ? payload.urls : parseUrlsFromEnv(env);
-    console.log("[fetch] URLs to process:", urls);
-
-    if (!urls.length) {
-      console.warn("[fetch] No URLs provided in payload or env.URLS_JSON");
-      return Response.json(
-        { ok: false, error: "No urls provided. Send { urls: string[] } or set URLS_JSON secret." },
-        { status: 400 },
-      );
-    }
-
-    try {
-      const result = await runCrawl(urls, env);
-      console.log("[fetch] Crawl result:", result);
-      return Response.json({ ok: true, ...result });
-    } catch (err) {
-      console.error("[fetch] Error in runCrawl:", err);
-      return Response.json(
-        { ok: false, error: "Internal error", details: String(err) },
-        { status: 500 },
-      );
-    }
-  },
+declare const HTMLRewriter: {
+  new (): {
+    on(selector: string, handlers: { element: (el: any) => void }): any;
+    transform(response: Response): Response;
+  };
 };
+
+type EventPin = {
+  title: string;
+  venue?: string;
+  time_label?: string;
+  photo_url?: string;
+  location?: string;
+  category?: string;
+  spontaneity_score?: number;
+  crowd_label?: string;
+  tags?: string[];
+  description?: string;
+  source_url: string;
+  created_at?: string;
+};
+
+async function sanitizeHTML(source: Response): Promise<string> {
+  console.log("[sanitizeHTML] Starting HTML sanitization");
+  const rewriter = new HTMLRewriter()
+    .on("script", { element: (el) => el.remove() })
+    .on("style", { element: (el) => el.remove() })
+    .on("noscript", { element: (el) => el.remove() })
+    .on("nav", { element: (el) => el.remove() })
+    .on("footer", { element: (el) => el.remove() })
+    .on("aside", { element: (el) => el.remove() });
+
+  const rewritten = rewriter.transform(source);
+  const text = await rewritten.text();
+  console.log("[sanitizeHTML] Sanitization complete, length:", text.length);
+  return text;
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  return text.slice(start, end + 1);
+}
+
+function getGeminiText(data: any): string {
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+}
+
+function coerceEvents(payload: any): EventPin[] {
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  return events
+    .filter((item: any) => typeof item?.title === "string")
+    .map((item: any) => ({
+      title: item.title,
+      venue: item.venue,
+      time_label: item.time_label,
+      photo_url: item.photo_url,
+      location: item.location,
+      category: item.category,
+      spontaneity_score:
+        typeof item.spontaneity_score === "number" ? item.spontaneity_score : undefined,
+      crowd_label: item.crowd_label,
+      tags: Array.isArray(item.tags) ? item.tags.filter((x: any) => typeof x === "string") : undefined,
+      description: item.description,
+      source_url: "",
+      created_at: item.created_at,
+    }));
+}
+
+async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin[]> {
+  if (!apiKey) {
+    throw new Error("Missing GEMINI_API_KEY in environment");
+  }
+
+  console.log("[callGemini] Preparing Gemini request");
+  const prompt = [
+    "Extract events and venues from this HTML.",
+    "Return STRICT JSON only in this shape:",
+    '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","created_at":"string?"}],"links":["string?"]}',
+    `HTML:\n${cleanedHtml}`,
+  ].join("\n");
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
+    },
+  );
+
+  console.log("[callGemini] Gemini response status:", res.status);
+  if (!res.ok) {
+    throw new Error(`Gemini request failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  const rawText = getGeminiText(data);
+  const maybeJson = extractFirstJsonObject(rawText);
+  if (!maybeJson) {
+    console.warn("[callGemini] No JSON object found in Gemini response");
+    return [];
+  }
+
+  const parsed = JSON.parse(maybeJson);
+  const events = coerceEvents(parsed);
+  console.log("[callGemini] Parsed events count:", events.length);
+  return events;
+}
+
+async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<void> {
+  if (!events.length) {
+    console.log("[insertEventsToSupabase] No events to insert");
+    return;
+  }
+
+  const supabaseToken = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY;
+  if (!supabaseToken) {
+    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY)");
+  }
+
+  console.log("[insertEventsToSupabase] Inserting events:", events.length);
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/events`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: supabaseToken,
+      Authorization: `Bearer ${supabaseToken}`,
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(events),
+  });
+
+  console.log("[insertEventsToSupabase] Supabase response status:", res.status);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Supabase insert failed (${res.status}): ${body}`);
+  }
+}
 
 async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; inserted: number }> {
   let processed = 0;
   let inserted = 0;
 
-  console.log("[runCrawl] URLs received:", urls);
+  console.log("[runCrawl] Starting crawl. URL count:", urls.length);
 
   for (const url of urls) {
     try {
-      console.log("[runCrawl] Processing URL:", url);
-
+      console.log("[runCrawl] Fetching URL:", url);
       const source = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+      console.log("[runCrawl] Source status for", url, ":", source.status);
+
       if (!source.ok) {
-        console.warn("[runCrawl] Fetch failed for URL:", url, "Status:", source.status);
+        console.warn("[runCrawl] Skipping URL due to non-OK response:", url);
         continue;
       }
 
       const cleaned = await sanitizeHTML(source);
-      console.log("[runCrawl] Cleaned HTML for URL:", url, cleaned.slice(0, 100));
+      console.log("[runCrawl] Cleaned HTML length for", url, ":", cleaned.length);
 
+      // API key is correctly accessed from env (runtime secret), not hardcoded.
       const events = await callGemini(cleaned, env.GEMINI_API_KEY);
-      console.log("[runCrawl] Gemini events for URL:", url, events);
+      console.log("[runCrawl] Events extracted for", url, ":", events.length);
 
       const eventsWithSource = events.map((event) => ({ ...event, source_url: url }));
       await insertEventsToSupabase(eventsWithSource, env);
 
       processed += 1;
       inserted += eventsWithSource.length;
-
-      console.log("[runCrawl] Inserted events for URL:", url, "Count:", eventsWithSource.length);
+      console.log("[runCrawl] Completed URL:", url, "processed:", processed, "inserted:", inserted);
     } catch (err) {
-      console.error("[runCrawl] Error processing url", url, err);
+      console.error("[runCrawl] Error processing url:", url, err);
     }
   }
 
-  console.log("[runCrawl] Finished. Processed:", processed, "Inserted:", inserted);
+  console.log("[runCrawl] Finished crawl. Processed:", processed, "Inserted:", inserted);
   return { processed, inserted };
 }
 
-function parseUrlsFromEnv(env: Env): string[] {
-  if (!env.URLS_JSON) {
-    console.warn("[parseUrlsFromEnv] env.URLS_JSON is missing");
-    return [];
-  }
+function getConfiguredUrls(): string[] {
+  const rawUrls = Array.isArray((urlsConfig as any)?.urls) ? (urlsConfig as any).urls : [];
+  const urls = rawUrls
+    .filter((u: unknown) => typeof u === "string")
+    .map((u: string) => u.trim())
+    .filter((u: string) => u.length > 0);
 
-  try {
-    const parsed = JSON.parse(env.URLS_JSON);
-    const urls = Array.isArray(parsed) ? parsed.filter((u) => typeof u === "string") : [];
-    console.log("[parseUrlsFromEnv] Parsed URLs:", urls);
-    return urls;
-  } catch (err) {
-    console.error("[parseUrlsFromEnv] Failed to parse env.URLS_JSON:", env.URLS_JSON, err);
-    return [];
-  }
+  console.log("[getConfiguredUrls] Loaded URLs count:", urls.length);
+  return urls;
 }
+
+function isManualTriggerPath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  const last = segments.length ? segments[segments.length - 1].toLowerCase() : "";
+  return last === "manual";
+}
+
+export default {
+  async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
+    console.log("[scheduled] Triggered");
+    const urls = getConfiguredUrls();
+    if (!urls.length) {
+      console.warn("[scheduled] No configured URLs");
+      return;
+    }
+    const result = await runCrawl(urls, env);
+    console.log("[scheduled] Done:", result);
+  },
+
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    console.log("[fetch] Incoming request", { method: request.method, path: url.pathname });
+
+    if (request.method === "GET" && isManualTriggerPath(url.pathname)) {
+      console.log("[manual] Trigger received:", url.pathname);
+
+      const urls = getConfiguredUrls();
+      console.log("[manual] URLs resolved:", urls);
+
+      if (!urls.length) {
+        console.warn("[manual] No URLs configured in urls.json");
+        return Response.json(
+          { ok: false, error: "No URLs configured in urls.json." },
+          { status: 400 },
+        );
+      }
+
+      try {
+        console.log("[manual] Starting crawl");
+        const result = await runCrawl(urls, env);
+        console.log("[manual] Crawl finished:", result);
+
+        return new Response(
+          [
+            "Manual scrape complete.",
+            `Processed URLs: ${result.processed}`,
+            `Inserted events: ${result.inserted}`,
+          ].join("\n"),
+          { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+        );
+      } catch (err) {
+        console.error("[manual] Crawl failed:", err);
+        return Response.json(
+          { ok: false, error: "Manual crawl failed", details: String(err) },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (request.method === "GET") {
+      return Response.json({ ok: true, message: "Worker is running" });
+    }
+
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+
+    const payload = (await request.json().catch(() => ({}))) as { urls?: string[] };
+    const urls = Array.isArray(payload.urls) ? payload.urls : getConfiguredUrls();
+
+    if (!urls.length) {
+      return Response.json(
+        { ok: false, error: "No urls provided. Send { urls: string[] } or configure urls.json." },
+        { status: 400 },
+      );
+    }
+
+    const result = await runCrawl(urls, env);
+    return Response.json({ ok: true, ...result });
+  },
+};
 
