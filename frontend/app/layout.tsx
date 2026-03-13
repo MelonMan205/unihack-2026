@@ -1,5 +1,13 @@
 import type { Metadata, Viewport } from "next";
+import { Space_Mono } from "next/font/google";
 import "./globals.css";
+
+const appFont = Space_Mono({
+  subsets: ["latin"],
+  weight: ["400", "700"],
+  display: "swap",
+  variable: "--font-app",
+});
 
 export const metadata: Metadata = {
   title: "Spontaneous Events Map",
@@ -20,7 +28,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className={appFont.variable}>{children}</body>
     </html>
   );
 }

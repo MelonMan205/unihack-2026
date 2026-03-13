@@ -19,7 +19,7 @@ body,
 
 body {
   font-family:
-    "Iosevka Charon Mono",
+    var(--font-app),
     ui-monospace,
     "SF Mono",
     "JetBrains Mono",

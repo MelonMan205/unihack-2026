@@ -120,7 +120,7 @@ export default function HomePage() {
   );
 
   return (
-    <main className="relative h-[100dvh] w-full overflow-hidden bg-[#eef1f5] text-zinc-900">
+    <main className="relative h-[100dvh] min-h-[100svh] w-full overflow-hidden bg-[#eef1f5] text-zinc-900">
       {isLocationReady ? (
         <MapView
           events={filteredEvents}
@@ -128,32 +128,34 @@ export default function HomePage() {
           userLocation={userLocation}
         />
       ) : (
-        <div className="h-[100dvh] w-full bg-[#f8f3e8]" />
+        <div className="h-[100dvh] min-h-[100svh] w-full bg-[#f8f3e8]" />
       )}
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-[1200] flex justify-center px-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-4 sm:pt-4">
-        <Card className="glass-panel pointer-events-auto w-full max-w-4xl border-white/30 text-zinc-900 animate-rise">
-          <CardContent className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:p-5">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500 sm:text-[11px]">
-                Tonight nearby
-              </p>
-              <h1 className="text-[15px] font-semibold leading-tight text-zinc-900 sm:text-2xl">
-                {nearbyTonightCount} spontaneous things within {HERO_RADIUS_KM}km tonight
-              </h1>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="secondary" className="glass-badge bg-white/65 text-zinc-700">
-                <MapPin className="mr-1.5 h-3.5 w-3.5 text-yellow-500" />
-                {locationLabel}
-              </Badge>
-              <Badge variant="secondary" className="glass-badge bg-yellow-200/70 text-zinc-900">
-                <Timer className="mr-1.5 h-3.5 w-3.5" />
-                Live now
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-[1200] pt-[max(0.75rem,env(safe-area-inset-top))] sm:pt-4">
+        <div className="mx-auto w-full max-w-4xl px-3 sm:px-4">
+          <Card className="glass-panel pointer-events-auto w-full border-white/30 text-zinc-900 animate-rise">
+            <CardContent className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:p-5">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500 sm:text-[11px]">
+                  Tonight nearby
+                </p>
+                <h1 className="text-[15px] font-semibold leading-tight text-zinc-900 sm:text-2xl">
+                  {nearbyTonightCount} spontaneous things within {HERO_RADIUS_KM}km tonight
+                </h1>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary" className="glass-badge bg-white/65 text-zinc-700">
+                  <MapPin className="mr-1.5 h-3.5 w-3.5 text-yellow-500" />
+                  {locationLabel}
+                </Badge>
+                <Badge variant="secondary" className="glass-badge bg-yellow-200/70 text-zinc-900">
+                  <Timer className="mr-1.5 h-3.5 w-3.5" />
+                  Live now
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       <div className="pointer-events-none absolute left-4 top-1/2 z-[1200] hidden -translate-y-1/2 lg:block">
@@ -178,44 +180,46 @@ export default function HomePage() {
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1200] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-4">
-        <Card className="glass-panel pointer-events-auto mx-auto w-full max-w-4xl border-white/30 animate-rise-delayed">
-          <CardContent className="flex flex-col gap-3 p-3 sm:p-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="no-scrollbar flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 lg:hidden">
-              {FILTERS.map((filter) => (
-                <Button
-                  key={filter.value}
-                  variant={selectedCategory === filter.value ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setSelectedCategory(filter.value)}
-                  className="h-10 snap-start px-4"
-                >
-                  {filter.value !== "all" ? categoryIcons[filter.value] : null}
-                  {filter.label}
-                </Button>
-              ))}
-            </div>
-            <div className="pointer-events-auto relative min-w-0 flex-1 lg:min-w-[220px]">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search for anything..."
-                className="h-11 w-full rounded-[14px] border border-zinc-300/70 bg-white/82 pl-9 pr-3 text-sm text-zinc-800 outline-none placeholder:text-zinc-500 focus:border-zinc-400"
-              />
-            </div>
-            <Button className="h-11 w-full rounded-[14px] bg-yellow-400 text-zinc-900 hover:bg-yellow-300 sm:w-auto sm:px-6">
-              Go on a side quest
-            </Button>
-          </CardContent>
-        </Card>
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1200] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4">
+        <div className="mx-auto w-full max-w-4xl px-3 sm:px-4">
+          <Card className="glass-panel pointer-events-auto w-full border-white/30 animate-rise-delayed">
+            <CardContent className="flex flex-col gap-3 p-3 sm:p-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="no-scrollbar flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 lg:hidden">
+                {FILTERS.map((filter) => (
+                  <Button
+                    key={filter.value}
+                    variant={selectedCategory === filter.value ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setSelectedCategory(filter.value)}
+                    className="h-10 snap-start px-4"
+                  >
+                    {filter.value !== "all" ? categoryIcons[filter.value] : null}
+                    {filter.label}
+                  </Button>
+                ))}
+              </div>
+              <div className="pointer-events-auto relative min-w-0 flex-1 lg:min-w-[220px]">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search for anything..."
+                  className="h-11 w-full rounded-[14px] border border-zinc-300/70 bg-white/82 pl-9 pr-3 text-sm text-zinc-800 outline-none placeholder:text-zinc-500 focus:border-zinc-400"
+                />
+              </div>
+              <Button className="h-11 w-full rounded-[14px] bg-yellow-400 text-zinc-900 hover:bg-yellow-300 sm:w-auto sm:px-6">
+                Go on a side quest
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       <Sheet open={Boolean(selectedEvent)} onOpenChange={(open) => !open && setSelectedEvent(null)}>
         <SheetContent
           side="bottom"
-          className="mx-auto max-w-3xl rounded-t-[20px] border-white/35 bg-white/82 px-5 pb-8 pt-5 backdrop-blur-2xl"
+          className="mx-auto max-h-[80dvh] max-w-3xl overflow-y-auto rounded-t-[20px] border-white/35 bg-white/82 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-5 backdrop-blur-2xl sm:px-5"
         >
           {selectedEvent ? (
             <>
