@@ -47,8 +47,9 @@ type SupabaseEventRow = {
   tags: string[] | null;
   description: string | null;
   source_url: string;
-  created_at: string | null;
+  created_at: string;
 };
+type SupabaseInsertRow = Record<string, unknown>;
 
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
@@ -256,7 +257,9 @@ function normalizeEventForInsert(event: EventPin): SupabaseEventRow {
   const createdAtRaw = event.created_at?.trim();
   const createdAtDate = createdAtRaw ? new Date(createdAtRaw) : null;
   const created_at =
-    createdAtDate && !Number.isNaN(createdAtDate.getTime()) ? createdAtDate.toISOString() : null;
+    createdAtDate && !Number.isNaN(createdAtDate.getTime())
+      ? createdAtDate.toISOString()
+      : new Date().toISOString();
 
   const tags = Array.isArray(event.tags)
     ? event.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0)
@@ -284,6 +287,95 @@ function normalizeEventForInsert(event: EventPin): SupabaseEventRow {
 function isPostgrestKeyMismatchError(body: string): boolean {
   const text = body.toLowerCase();
   return text.includes("pgrst102") || text.includes("all object keys must match");
+}
+
+function isDuplicateViolation(body: string): boolean {
+  const text = body.toLowerCase();
+  return text.includes('"code":"23505"') || text.includes("duplicate key value violates unique constraint");
+}
+
+function getNullColumnFromError(body: string): string | null {
+  const match = body.match(/null value in column "([^"]+)"/i);
+  return match?.[1] ?? null;
+}
+
+function getMissingColumnFromError(body: string): string | null {
+  const quoted = body.match(/could not find the '([^']+)' column/i);
+  if (quoted?.[1]) return quoted[1];
+  const relation = body.match(/column "([^"]+)" of relation "events" does not exist/i);
+  return relation?.[1] ?? null;
+}
+
+function getColumnFromTypeError(body: string): string | null {
+  const match = body.match(/column "([^"]+)"/i);
+  return match?.[1] ?? null;
+}
+
+function getDefaultValueForColumn(column: string, row: SupabaseInsertRow): unknown {
+  const col = column.toLowerCase();
+  const now = new Date().toISOString();
+  const sourceUrl =
+    (typeof row.source_url === "string" && row.source_url.trim().length > 0
+      ? row.source_url
+      : typeof row.visit_more_url === "string" && row.visit_more_url.trim().length > 0
+        ? row.visit_more_url
+        : "https://example.com") as string;
+
+  if (col === "created_at" || col === "updated_at" || col.endsWith("_at")) return now;
+  if (col === "source_url") return sourceUrl;
+  if (col === "visit_more_url") return sourceUrl;
+  if (col === "title") return (typeof row.title === "string" && row.title.trim()) || "Untitled event";
+  if (col === "tags") return [];
+  if (col === "spontaneity_score") return 0;
+  if (col === "crowd_label") return "moderate";
+  return "";
+}
+
+function applySupabaseErrorFix(row: SupabaseInsertRow, body: string): boolean {
+  const text = body.toLowerCase();
+
+  const nullColumn = getNullColumnFromError(body);
+  if (nullColumn) {
+    row[nullColumn] = getDefaultValueForColumn(nullColumn, row);
+    return true;
+  }
+
+  const missingColumn = getMissingColumnFromError(body);
+  if (missingColumn && missingColumn in row) {
+    delete row[missingColumn];
+    return true;
+  }
+
+  if (
+    text.includes("invalid input syntax for type timestamp") ||
+    text.includes("invalid input syntax for type date")
+  ) {
+    const column = getColumnFromTypeError(body);
+    if (column) {
+      row[column] = new Date().toISOString();
+      return true;
+    }
+  }
+
+  if (text.includes("malformed array literal")) {
+    const column = getColumnFromTypeError(body);
+    if (column) {
+      row[column] = [];
+      return true;
+    }
+    if ("tags" in row) {
+      row.tags = [];
+      return true;
+    }
+  }
+
+  if (text.includes("invalid input value for enum")) {
+    const column = getColumnFromTypeError(body) ?? "crowd_label";
+    row[column] = getDefaultValueForColumn(column, row);
+    return true;
+  }
+
+  return false;
 }
 
 type EventPopulationPatch = {
@@ -643,7 +735,7 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
       "Content-Type": "application/json",
       apikey: supabaseToken,
       Authorization: `Bearer ${supabaseToken}`,
-      Prefer: "return=minimal",
+      Prefer: "return=minimal,missing=default",
     },
     body: JSON.stringify(dedupedEvents),
   });
@@ -651,34 +743,63 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
   console.log("[insertEventsToSupabase] Supabase response status:", res.status);
   if (!res.ok) {
     const body = await res.text();
-    if (!isPostgrestKeyMismatchError(body)) {
-      throw new Error(`Supabase insert failed (${res.status}): ${body}`);
-    }
-
-    console.warn(
-      "[insertEventsToSupabase] Bulk insert failed with key-shape mismatch, retrying row-by-row",
-    );
+    const fallbackReason = isPostgrestKeyMismatchError(body)
+      ? "key-shape mismatch"
+      : "bulk insert error";
+    console.warn(`[insertEventsToSupabase] Bulk insert failed (${fallbackReason}), retrying row-by-row`, {
+      status: res.status,
+      bodyPreview: clipForLog(body, 1200),
+    });
 
     const rowErrors: string[] = [];
     let insertedCount = 0;
 
     for (const event of dedupedEvents) {
-      const rowRes = await fetch(`${supabaseUrl}/rest/v1/events`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: supabaseToken,
-          Authorization: `Bearer ${supabaseToken}`,
-          Prefer: "return=minimal",
-        },
-        body: JSON.stringify(event),
-      });
+      const row: SupabaseInsertRow = { ...event };
+      let inserted = false;
+      let attempts = 0;
 
-      if (!rowRes.ok) {
+      while (!inserted && attempts < 5) {
+        attempts += 1;
+        const rowRes = await fetch(`${supabaseUrl}/rest/v1/events`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: supabaseToken,
+            Authorization: `Bearer ${supabaseToken}`,
+            Prefer: "return=minimal,missing=default",
+          },
+          body: JSON.stringify(row),
+        });
+
+        if (rowRes.ok) {
+          inserted = true;
+          insertedCount += 1;
+          break;
+        }
+
         const rowBody = await rowRes.text();
-        rowErrors.push(`${event.title} => (${rowRes.status}) ${rowBody}`);
-      } else {
-        insertedCount += 1;
+        if (isDuplicateViolation(rowBody)) {
+          inserted = true;
+          console.log("[insertEventsToSupabase] Skipping duplicate event row", {
+            title: row.title,
+            source_url: row.source_url,
+          });
+          break;
+        }
+
+        const fixed = applySupabaseErrorFix(row, rowBody);
+        if (!fixed) {
+          rowErrors.push(
+            `${String(row.title ?? "unknown")} => attempt ${attempts} (${rowRes.status}) ${rowBody}`,
+          );
+          break;
+        }
+
+        console.warn("[insertEventsToSupabase] Retrying row after adaptive fix", {
+          title: row.title,
+          attempt: attempts,
+        });
       }
     }
 
