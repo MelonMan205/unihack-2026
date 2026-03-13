@@ -163,6 +163,12 @@ function parseUrlsFromEnv(env: Env): string[] {
   }
 }
 
+function isManualTriggerPath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  const last = segments.length ? segments[segments.length - 1].toLowerCase() : "";
+  return last === "manual";
+}
+
 export default {
   async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
     const urls = parseUrlsFromEnv(env);
@@ -171,6 +177,28 @@ export default {
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (request.method === "GET" && isManualTriggerPath(url.pathname)) {
+      const urls = parseUrlsFromEnv(env);
+      if (!urls.length) {
+        return Response.json(
+          { ok: false, error: "No URLs configured. Set URLS_JSON secret for manual/cron runs." },
+          { status: 400 },
+        );
+      }
+
+      const result = await runCrawl(urls, env);
+      return new Response(
+        [
+          "Manual scrape complete.",
+          `Processed URLs: ${result.processed}`,
+          `Inserted events: ${result.inserted}`,
+        ].join("\n"),
+        { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+      );
+    }
+
     if (request.method === "GET") {
       return Response.json({ ok: true, message: "Worker is running" });
     }
