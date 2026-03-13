@@ -23,6 +23,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { fetchEventsFromSupabase } from "@/lib/supabase-events";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { DEFAULT_LOCATION, MOCK_EVENTS, type Category, type EventPin } from "@/mock/events";
 import { distanceInKm } from "@/utils/geo";
 
@@ -40,11 +42,7 @@ const FILTERS: { label: string; value: Category | "all" }[] = [
 ];
 
 const HERO_RADIUS_KM = 1;
-const EVENT_OFFSETS = MOCK_EVENTS.map((event) => ({
-  ...event,
-  latOffset: event.location[0] - DEFAULT_LOCATION[0],
-  lngOffset: event.location[1] - DEFAULT_LOCATION[1],
-}));
+const EVENTS_POLL_INTERVAL_MS = 30_000;
 
 const categoryIcons: Record<Category, ReactNode> = {
   music: <Waves className="h-[16px] w-[16px] stroke-[1.85]" />,
@@ -58,6 +56,7 @@ export default function HomePage() {
   const [selectedCategory, setSelectedCategory] = useState<Category | "all">("all");
   const [selectedEvent, setSelectedEvent] = useState<EventPin | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [events, setEvents] = useState<EventPin[]>(MOCK_EVENTS);
   const [userLocation, setUserLocation] = useState<[number, number]>(DEFAULT_LOCATION);
   const [locationLabel, setLocationLabel] = useState("Locating you...");
   const [isLocationReady, setIsLocationReady] = useState(false);
@@ -83,21 +82,58 @@ export default function HomePage() {
     );
   }, []);
 
-  const localizedEvents = useMemo(
-    () =>
-      EVENT_OFFSETS.map(({ latOffset, lngOffset, ...event }) => ({
-        ...event,
-        location: [userLocation[0] + latOffset, userLocation[1] + lngOffset] as [number, number],
-      })),
-    [userLocation],
-  );
+  useEffect(() => {
+    const client = getSupabaseBrowserClient();
+    if (!client) {
+      return;
+    }
+
+    let isDisposed = false;
+    let isRequestInFlight = false;
+
+    const pollEvents = async () => {
+      if (isDisposed || isRequestInFlight) {
+        return;
+      }
+
+      isRequestInFlight = true;
+
+      try {
+        const supabaseEvents = await fetchEventsFromSupabase(client);
+        if (!isDisposed) {
+          setEvents(supabaseEvents);
+        }
+      } catch (error) {
+        console.error("[events-poll] failed to load events", error);
+      } finally {
+        isRequestInFlight = false;
+      }
+    };
+
+    void pollEvents();
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void pollEvents();
+      }
+    }, EVENTS_POLL_INTERVAL_MS);
+
+    const onFocus = () => void pollEvents();
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      isDisposed = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
 
   const categoryFilteredEvents = useMemo(
     () =>
       selectedCategory === "all"
-        ? localizedEvents
-        : localizedEvents.filter((event) => event.category === selectedCategory),
-    [selectedCategory, localizedEvents],
+        ? events
+        : events.filter((event) => event.category === selectedCategory),
+    [selectedCategory, events],
   );
 
   const filteredEvents = useMemo(() => {
