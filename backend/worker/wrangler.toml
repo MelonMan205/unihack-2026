@@ -1,0 +1,4 @@
+name = "unihack-2026"
+type = "javascript"
+compatibility_date = "2026-03-13"
+main = "index.ts"
