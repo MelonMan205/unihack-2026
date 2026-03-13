@@ -4,3 +4,6 @@ package-lock.json
 package.json
 !frontend/package.json
 !frontend/package-lock.json
+
+.wrangler
+.dev.vars
