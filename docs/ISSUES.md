@@ -1,0 +1,1 @@
+- FRONTEND: NextJS port doesnt have the font import working properly
