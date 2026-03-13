@@ -5,6 +5,8 @@ compatibility_date = "2026-03-13"
 
 [vars]
 GEMINI_API_KEY = "api key here"
+SUPABASE_SERVICE_ROLE_KEY = " Service role"
+SUPABASE_URL = "https://wgyleywyxkbhbqldocif.supabase.co"
 
 [observability]
 [observability.logs]
