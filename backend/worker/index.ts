@@ -7,9 +7,11 @@ interface Env {
   SUPABASE_KEY?: string;
 }
 
+type HtmlElement = { remove: () => void };
+
 declare const HTMLRewriter: {
   new (): {
-    on(selector: string, handlers: { element: (el: any) => void }): any;
+    on(selector: string, handlers: { element: (el: HtmlElement) => void }): any;
     transform(response: Response): Response;
   };
 };
@@ -32,12 +34,12 @@ type EventPin = {
 async function sanitizeHTML(source: Response): Promise<string> {
   console.log("[sanitizeHTML] Starting HTML sanitization");
   const rewriter = new HTMLRewriter()
-    .on("script", { element: (el) => el.remove() })
-    .on("style", { element: (el) => el.remove() })
-    .on("noscript", { element: (el) => el.remove() })
-    .on("nav", { element: (el) => el.remove() })
-    .on("footer", { element: (el) => el.remove() })
-    .on("aside", { element: (el) => el.remove() });
+    .on("script", { element: (el: HtmlElement) => el.remove() })
+    .on("style", { element: (el: HtmlElement) => el.remove() })
+    .on("noscript", { element: (el: HtmlElement) => el.remove() })
+    .on("nav", { element: (el: HtmlElement) => el.remove() })
+    .on("footer", { element: (el: HtmlElement) => el.remove() })
+    .on("aside", { element: (el: HtmlElement) => el.remove() });
 
   const rewritten = rewriter.transform(source);
   const text = await rewritten.text();
@@ -90,23 +92,28 @@ async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin
     `HTML:\n${cleanedHtml}`,
   ].join("\n");
 
+  // Fixed endpoint: use v1beta + model path supported by Gemini generateContent REST.
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
     },
   );
 
   console.log("[callGemini] Gemini response status:", res.status);
   if (!res.ok) {
-    throw new Error(`Gemini request failed: ${res.status}`);
+    const errBody = await res.text();
+    throw new Error(`Gemini request failed: ${res.status} ${errBody}`);
   }
 
   const data = await res.json();
   const rawText = getGeminiText(data);
   const maybeJson = extractFirstJsonObject(rawText);
+
   if (!maybeJson) {
     console.warn("[callGemini] No JSON object found in Gemini response");
     return [];
@@ -168,7 +175,7 @@ async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; 
       const cleaned = await sanitizeHTML(source);
       console.log("[runCrawl] Cleaned HTML length for", url, ":", cleaned.length);
 
-      // API key is correctly accessed from env (runtime secret), not hardcoded.
+      // Gemini key is read from runtime secret env.GEMINI_API_KEY
       const events = await callGemini(cleaned, env.GEMINI_API_KEY);
       console.log("[runCrawl] Events extracted for", url, ":", events.length);
 
@@ -208,10 +215,12 @@ export default {
   async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
     console.log("[scheduled] Triggered");
     const urls = getConfiguredUrls();
+
     if (!urls.length) {
       console.warn("[scheduled] No configured URLs");
       return;
     }
+
     const result = await runCrawl(urls, env);
     console.log("[scheduled] Done:", result);
   },
@@ -222,16 +231,12 @@ export default {
 
     if (request.method === "GET" && isManualTriggerPath(url.pathname)) {
       console.log("[manual] Trigger received:", url.pathname);
-
       const urls = getConfiguredUrls();
       console.log("[manual] URLs resolved:", urls);
 
       if (!urls.length) {
         console.warn("[manual] No URLs configured in urls.json");
-        return Response.json(
-          { ok: false, error: "No URLs configured in urls.json." },
-          { status: 400 },
-        );
+        return Response.json({ ok: false, error: "No URLs configured in urls.json." }, { status: 400 });
       }
 
       try {
