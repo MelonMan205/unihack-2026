@@ -208,7 +208,10 @@ function coerceEvents(payload: any): EventPin[] {
       description: item.description,
       source_url: typeof item.source_url === "string" ? item.source_url : "",
       visit_more_url: typeof item.visit_more_url === "string" ? item.visit_more_url : undefined,
-      created_at: item.created_at,
+      created_at:
+        typeof item.created_at === "string" && item.created_at.trim().length > 0
+          ? item.created_at.trim()
+          : undefined,
     }));
 }
 
