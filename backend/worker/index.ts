@@ -35,6 +35,21 @@ type EventPin = {
   created_at?: string;
 };
 
+type SupabaseEventRow = {
+  title: string;
+  venue: string | null;
+  time_label: string | null;
+  photo_url: string | null;
+  location: string | null;
+  category: string | null;
+  spontaneity_score: number | null;
+  crowd_label: string | null;
+  tags: string[] | null;
+  description: string | null;
+  source_url: string;
+  created_at: string | null;
+};
+
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
@@ -237,34 +252,38 @@ function coerceEvents(payload: any): EventPin[] {
     });
 }
 
-function normalizeEventForInsert(event: EventPin): EventPin {
-  const normalized: EventPin = {
-    ...event,
+function normalizeEventForInsert(event: EventPin): SupabaseEventRow {
+  const createdAtRaw = event.created_at?.trim();
+  const createdAtDate = createdAtRaw ? new Date(createdAtRaw) : null;
+  const created_at =
+    createdAtDate && !Number.isNaN(createdAtDate.getTime()) ? createdAtDate.toISOString() : null;
+
+  const tags = Array.isArray(event.tags)
+    ? event.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0)
+    : null;
+
+  return {
     title: (event.title ?? "").trim(),
-    venue: event.venue?.trim() || undefined,
-    time_label: event.time_label?.trim() || undefined,
-    photo_url: event.photo_url?.trim() || undefined,
-    location: event.location?.trim() || undefined,
-    category: event.category?.trim() || undefined,
-    crowd_label: event.crowd_label?.trim() || undefined,
-    description: event.description?.trim() || undefined,
-    source_url: event.source_url?.trim() || "",
-    visit_more_url: event.visit_more_url?.trim() || undefined,
-    tags: Array.isArray(event.tags)
-      ? event.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0)
-      : undefined,
+    venue: event.venue?.trim() || null,
+    time_label: event.time_label?.trim() || null,
+    photo_url: event.photo_url?.trim() || null,
+    location: event.location?.trim() || null,
+    category: event.category?.trim() || null,
     spontaneity_score:
       typeof event.spontaneity_score === "number"
         ? Math.max(0, Math.min(100, Math.round(event.spontaneity_score)))
-        : undefined,
+        : null,
+    crowd_label: event.crowd_label?.trim() || null,
+    tags: tags && tags.length > 0 ? tags : null,
+    description: event.description?.trim() || null,
+    source_url: event.source_url?.trim() || "",
+    created_at,
   };
+}
 
-  if (normalized.created_at) {
-    const dt = new Date(normalized.created_at);
-    normalized.created_at = Number.isNaN(dt.getTime()) ? undefined : dt.toISOString();
-  }
-
-  return normalized;
+function isPostgrestKeyMismatchError(body: string): boolean {
+  const text = body.toLowerCase();
+  return text.includes("pgrst102") || text.includes("all object keys must match");
 }
 
 type EventPopulationPatch = {
@@ -613,7 +632,11 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
     return;
   }
 
-  console.log("[insertEventsToSupabase] Inserting events:", sanitizedEvents.length);
+  const dedupedEvents = Array.from(
+    new Map(sanitizedEvents.map((event) => [`${event.title}::${event.source_url}`, event])).values(),
+  );
+
+  console.log("[insertEventsToSupabase] Inserting events:", dedupedEvents.length);
   const res = await fetch(`${supabaseUrl}/rest/v1/events`, {
     method: "POST",
     headers: {
@@ -622,13 +645,53 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
       Authorization: `Bearer ${supabaseToken}`,
       Prefer: "return=minimal",
     },
-    body: JSON.stringify(sanitizedEvents),
+    body: JSON.stringify(dedupedEvents),
   });
 
   console.log("[insertEventsToSupabase] Supabase response status:", res.status);
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Supabase insert failed (${res.status}): ${body}`);
+    if (!isPostgrestKeyMismatchError(body)) {
+      throw new Error(`Supabase insert failed (${res.status}): ${body}`);
+    }
+
+    console.warn(
+      "[insertEventsToSupabase] Bulk insert failed with key-shape mismatch, retrying row-by-row",
+    );
+
+    const rowErrors: string[] = [];
+    let insertedCount = 0;
+
+    for (const event of dedupedEvents) {
+      const rowRes = await fetch(`${supabaseUrl}/rest/v1/events`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: supabaseToken,
+          Authorization: `Bearer ${supabaseToken}`,
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify(event),
+      });
+
+      if (!rowRes.ok) {
+        const rowBody = await rowRes.text();
+        rowErrors.push(`${event.title} => (${rowRes.status}) ${rowBody}`);
+      } else {
+        insertedCount += 1;
+      }
+    }
+
+    console.log("[insertEventsToSupabase] Row-by-row insert summary", {
+      total: dedupedEvents.length,
+      inserted: insertedCount,
+      failed: rowErrors.length,
+      failedPreview: clipForLog(JSON.stringify(rowErrors), 2000),
+    });
+
+    if (rowErrors.length > 0) {
+      throw new Error(`Supabase row inserts failed for ${rowErrors.length} events`);
+    }
   }
 }
 
