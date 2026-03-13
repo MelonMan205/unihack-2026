@@ -28,6 +28,7 @@ type EventPin = {
   tags?: string[];
   description?: string;
   source_url: string;
+  visit_more_url?: string;
   created_at?: string;
 };
 
@@ -77,8 +78,24 @@ function buildPrompt(cleanedHtml: string): string {
   return [
     "Extract events and venues from this HTML.",
     "Return STRICT JSON only in this shape:",
-    '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","created_at":"string?"}],"links":["string?"]}',
+    '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","visit_more_url":"string?","created_at":"string?"}],"links":["string?"]}',
     `HTML:\n${cleanedHtml}`,
+  ].join("\n");
+}
+
+function buildPopulationPrompt(payload: string): string {
+  return [
+    "You are enriching extracted events with source content.",
+    "Use each event's source_content to infer missing details and improve quality.",
+    "For each event return only these fields: description, crowd_label, tags, spontaneity_score.",
+    "Rules:",
+    '- description: concise 1-3 sentences; use source_content facts; if unknown return "".',
+    '- crowd_label: one of ["quiet","moderate","busy","packed"] or "" if unknown.',
+    "- tags: 2-6 short lowercase tags.",
+    "- spontaneity_score: integer 0-100 based on effort/planning needed (higher = more spontaneous).",
+    "Return STRICT JSON only in this exact shape:",
+    '{"events":[{"event_index":"number","description":"string","crowd_label":"string","tags":["string"],"spontaneity_score":"number"}]}',
+    `INPUT:\n${payload}`,
   ].join("\n");
 }
 
@@ -163,9 +180,42 @@ function coerceEvents(payload: any): EventPin[] {
         ? item.tags.filter((x: any) => typeof x === "string")
         : undefined,
       description: item.description,
-      source_url: "",
+      source_url: typeof item.source_url === "string" ? item.source_url : "",
+      visit_more_url: typeof item.visit_more_url === "string" ? item.visit_more_url : undefined,
       created_at: item.created_at,
     }));
+}
+
+type EventPopulationPatch = {
+  event_index: number;
+  description?: string;
+  crowd_label?: string;
+  tags?: string[];
+  spontaneity_score?: number;
+};
+
+function extractJsonPayload(text: string): any | null {
+  const maybeJson = extractFirstJsonObject(text);
+  if (!maybeJson) return null;
+  try {
+    return JSON.parse(maybeJson);
+  } catch (err) {
+    console.error("[extractJsonPayload] Failed to parse extracted JSON object", {
+      extractedPreview: clipForLog(maybeJson),
+      err: String(err),
+    });
+    return null;
+  }
+}
+
+function resolveUrl(baseUrl: string, maybeUrl?: string): string {
+  const value = (maybeUrl ?? "").trim();
+  if (!value) return baseUrl;
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return baseUrl;
+  }
 }
 
 async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin[]> {
@@ -234,20 +284,9 @@ async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin
     textLength: rawText.length,
   });
 
-  const maybeJson = extractFirstJsonObject(rawText);
-  if (!maybeJson) {
+  const parsed = extractJsonPayload(rawText);
+  if (!parsed) {
     console.warn("[callGemini] No JSON object found in Gemini candidate text");
-    return [];
-  }
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(maybeJson);
-  } catch (err) {
-    console.error("[callGemini] Failed to parse extracted JSON object", {
-      extractedPreview: clipForLog(maybeJson),
-      err: String(err),
-    });
     return [];
   }
 
@@ -258,6 +297,118 @@ async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin
   const events = coerceEvents(parsed);
   console.log("[callGemini] Parsed events count:", events.length);
   return events;
+}
+
+async function enrichEventsWithPopulationLayer(
+  events: EventPin[],
+  fallbackSourceUrl: string,
+  apiKey: string,
+): Promise<EventPin[]> {
+  if (!events.length) return events;
+  if (!apiKey) {
+    throw new Error("Missing GEMINI_API_KEY in environment");
+  }
+
+  const sourcePayload = await Promise.all(
+    events.map(async (event, index) => {
+      const preferredUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
+      let sourceContent = "";
+
+      try {
+        const res = await fetch(preferredUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+        if (res.ok) {
+          sourceContent = await sanitizeHTML(res);
+        } else {
+          console.warn("[enrichEventsWithPopulationLayer] Non-OK source content response", {
+            eventIndex: index,
+            status: res.status,
+            preferredUrl,
+          });
+        }
+      } catch (err) {
+        console.warn("[enrichEventsWithPopulationLayer] Failed to fetch source content", {
+          eventIndex: index,
+          preferredUrl,
+          err: String(err),
+        });
+      }
+
+      return {
+        event_index: index,
+        title: event.title,
+        venue: event.venue ?? "",
+        time_label: event.time_label ?? "",
+        location: event.location ?? "",
+        category: event.category ?? "",
+        source_url: preferredUrl,
+        source_content: clipForLog(sourceContent, 6000),
+      };
+    }),
+  );
+
+  const prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
+  const startedAt = Date.now();
+  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    }),
+  });
+  const durationMs = Date.now() - startedAt;
+
+  console.log("[enrichEventsWithPopulationLayer] Gemini response status", {
+    status: res.status,
+    durationMs,
+  });
+
+  const responseText = await res.text();
+  if (!res.ok) {
+    throw new Error(`Gemini enrichment request failed: ${res.status} :: ${clipForLog(responseText, 1000)}`);
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(responseText);
+  } catch (err) {
+    console.error("[enrichEventsWithPopulationLayer] Failed to parse Gemini JSON response", err);
+    return events;
+  }
+
+  const rawText = getGeminiText(data);
+  const parsed = extractJsonPayload(rawText);
+  const patchesRaw = Array.isArray(parsed?.events) ? parsed.events : [];
+  const patches: EventPopulationPatch[] = patchesRaw
+    .map((item: any) => ({
+      event_index: typeof item?.event_index === "number" ? item.event_index : -1,
+      description: typeof item?.description === "string" ? item.description : undefined,
+      crowd_label: typeof item?.crowd_label === "string" ? item.crowd_label : undefined,
+      tags: Array.isArray(item?.tags) ? item.tags.filter((x: any) => typeof x === "string") : undefined,
+      spontaneity_score: typeof item?.spontaneity_score === "number" ? item.spontaneity_score : undefined,
+    }))
+    .filter((patch) => patch.event_index >= 0 && patch.event_index < events.length);
+
+  if (!patches.length) {
+    console.warn("[enrichEventsWithPopulationLayer] No enrichment patches returned");
+    return events;
+  }
+
+  const patchByIndex = new Map<number, EventPopulationPatch>();
+  for (const patch of patches) patchByIndex.set(patch.event_index, patch);
+
+  return events.map((event, index) => {
+    const patch = patchByIndex.get(index);
+    const resolvedSourceUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
+    if (!patch) return { ...event, source_url: resolvedSourceUrl };
+    return {
+      ...event,
+      source_url: resolvedSourceUrl,
+      description: patch.description ?? event.description,
+      crowd_label: patch.crowd_label ?? event.crowd_label,
+      tags: patch.tags ?? event.tags,
+      spontaneity_score: patch.spontaneity_score ?? event.spontaneity_score,
+    };
+  });
 }
 
 async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<void> {
@@ -320,11 +471,12 @@ async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; 
     const events = await callGemini(cleaned, env.GEMINI_API_KEY);
     console.log("[runCrawl] Events extracted for", selectedUrl, ":", events.length);
 
-    const eventsWithSource = events.map((event) => ({ ...event, source_url: selectedUrl }));
-    await insertEventsToSupabase(eventsWithSource, env);
+    const populatedEvents = await enrichEventsWithPopulationLayer(events, selectedUrl, env.GEMINI_API_KEY);
+    const eventsForInsert = populatedEvents.map(({ visit_more_url: _omit, ...event }) => event);
+    await insertEventsToSupabase(eventsForInsert, env);
 
     processed = 1;
-    inserted = eventsWithSource.length;
+    inserted = eventsForInsert.length;
     console.log("[runCrawl] Completed URL:", selectedUrl, "processed:", processed, "inserted:", inserted);
   } catch (err) {
     console.error("[runCrawl] Error processing url:", selectedUrl, err);
