@@ -37,6 +37,7 @@ const PROMPT_OVERHEAD_CHARS = 4_000; // reserved for instructions + JSON schema 
 const MAX_HTML_CHARS = Math.max(1, MAX_PROMPT_CHARS - PROMPT_OVERHEAD_CHARS);
 
 function buildPrompt(cleanedHtml: string): string {
+  return "THIS IS A TEST";
   return [
     "Extract events and venues from this HTML.",
     "Return STRICT JSON only in this shape:",
