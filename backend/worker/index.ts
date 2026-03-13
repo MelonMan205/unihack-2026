@@ -1,3 +1,4 @@
+// commit
 export default {
   async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
     console.log("[scheduled] Worker triggered");
