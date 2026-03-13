@@ -31,13 +31,49 @@ type EventPin = {
   created_at?: string;
 };
 
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-const MAX_PROMPT_CHARS = 120_000; // conservative guard to reduce 524 risk
-const PROMPT_OVERHEAD_CHARS = 4_000; // reserved for instructions + JSON schema + labels
-const MAX_HTML_CHARS = Math.max(1, MAX_PROMPT_CHARS - PROMPT_OVERHEAD_CHARS);
+const GEMINI_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+
+/**
+ * Max tokens budget for the full prompt.
+ * Adjust this based on observed latency/errors.
+ */
+const MAX_PROMPT_TOKENS = 12000;
+
+/**
+ * Approx chars per token for English/web text.
+ * 4 is a common conservative approximation.
+ */
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+
+/**
+ * Reserve tokens for instruction/schema overhead (non-HTML text).
+ */
+const PROMPT_OVERHEAD_TOKENS = 1200;
+
+/**
+ * Derived max HTML chars allowed before calling Gemini.
+ */
+const MAX_HTML_CHARS = Math.max(
+  1,
+  (MAX_PROMPT_TOKENS - PROMPT_OVERHEAD_TOKENS) * CHARS_PER_TOKEN_ESTIMATE,
+);
+
+/**
+ * Hard cap log preview sizes to avoid huge observability payloads.
+ */
+const LOG_PREVIEW_CHARS = 3000;
+
+function estimateTokensFromChars(charCount: number): number {
+  return Math.ceil(charCount / CHARS_PER_TOKEN_ESTIMATE);
+}
+
+function clipForLog(text: string, max = LOG_PREVIEW_CHARS): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}... [truncated ${text.length - max} chars]`;
+}
 
 function buildPrompt(cleanedHtml: string): string {
-  return "THIS IS A TEST";
   return [
     "Extract events and venues from this HTML.",
     "Return STRICT JSON only in this shape:",
@@ -46,11 +82,37 @@ function buildPrompt(cleanedHtml: string): string {
   ].join("\n");
 }
 
-function enforceHtmlLengthLimit(html: string): { html: string; truncated: boolean } {
-  if (html.length <= MAX_HTML_CHARS) {
-    return { html, truncated: false };
+function enforceHtmlTokenBudget(html: string): {
+  html: string;
+  truncated: boolean;
+  originalChars: number;
+  finalChars: number;
+  originalTokensEst: number;
+  finalTokensEst: number;
+} {
+  const originalChars = html.length;
+  const originalTokensEst = estimateTokensFromChars(originalChars);
+
+  if (originalChars <= MAX_HTML_CHARS) {
+    return {
+      html,
+      truncated: false,
+      originalChars,
+      finalChars: originalChars,
+      originalTokensEst,
+      finalTokensEst: originalTokensEst,
+    };
   }
-  return { html: html.slice(0, MAX_HTML_CHARS), truncated: true };
+
+  const sliced = html.slice(0, MAX_HTML_CHARS);
+  return {
+    html: sliced,
+    truncated: true,
+    originalChars,
+    finalChars: sliced.length,
+    originalTokensEst,
+    finalTokensEst: estimateTokensFromChars(sliced.length),
+  };
 }
 
 async function sanitizeHTML(source: Response): Promise<string> {
@@ -65,7 +127,10 @@ async function sanitizeHTML(source: Response): Promise<string> {
 
   const rewritten = rewriter.transform(source);
   const text = await rewritten.text();
-  console.log("[sanitizeHTML] Sanitization complete", { length: text.length });
+  console.log("[sanitizeHTML] Sanitization complete", {
+    lengthChars: text.length,
+    tokensEst: estimateTokensFromChars(text.length),
+  });
   return text;
 }
 
@@ -94,7 +159,9 @@ function coerceEvents(payload: any): EventPin[] {
       spontaneity_score:
         typeof item.spontaneity_score === "number" ? item.spontaneity_score : undefined,
       crowd_label: item.crowd_label,
-      tags: Array.isArray(item.tags) ? item.tags.filter((x: any) => typeof x === "string") : undefined,
+      tags: Array.isArray(item.tags)
+        ? item.tags.filter((x: any) => typeof x === "string")
+        : undefined,
       description: item.description,
       source_url: "",
       created_at: item.created_at,
@@ -106,31 +173,31 @@ async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin
     throw new Error("Missing GEMINI_API_KEY in environment");
   }
 
-  const originalHtmlLength = cleanedHtml.length;
-  const constrained = enforceHtmlLengthLimit(cleanedHtml);
-  const constrainedHtmlLength = constrained.html.length;
-
-  const prompt = buildPrompt(constrained.html);
-  const promptLength = prompt.length;
-
-  console.log("[callGemini] Prompt sizing", {
-    originalHtmlLength,
-    constrainedHtmlLength,
-    htmlTruncated: constrained.truncated,
+  const constrained = enforceHtmlTokenBudget(cleanedHtml);
+  console.log("[callGemini] HTML budget check", {
+    maxPromptTokens: MAX_PROMPT_TOKENS,
+    promptOverheadTokens: PROMPT_OVERHEAD_TOKENS,
     maxHtmlChars: MAX_HTML_CHARS,
-    promptLength,
-    maxPromptChars: MAX_PROMPT_CHARS,
+    ...constrained,
   });
 
-  if (promptLength > MAX_PROMPT_CHARS) {
+  const prompt = buildPrompt(constrained.html);
+  const promptChars = prompt.length;
+  const promptTokensEst = estimateTokensFromChars(promptChars);
+
+  console.log("[callGemini] Prompt ready", {
+    promptChars,
+    promptTokensEst,
+    maxPromptTokens: MAX_PROMPT_TOKENS,
+  });
+
+  if (promptTokensEst > MAX_PROMPT_TOKENS) {
     throw new Error(
-      `Prompt too large after truncation. promptLength=${promptLength}, maxPromptChars=${MAX_PROMPT_CHARS}`,
+      `Prompt token estimate exceeds max: ${promptTokensEst} > ${MAX_PROMPT_TOKENS}`,
     );
   }
 
-  console.log("[callGemini] Sending Gemini request");
   const startedAt = Date.now();
-
   const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -138,33 +205,56 @@ async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     }),
   });
-
   const durationMs = Date.now() - startedAt;
-  console.log("[callGemini] Gemini response", { status: res.status, durationMs });
+
+  console.log("[callGemini] Gemini response status", { status: res.status, durationMs });
+
+  const responseText = await res.text();
+  console.log("[callGemini] Gemini raw response text", {
+    status: res.status,
+    durationMs,
+    bodyPreview: clipForLog(responseText),
+  });
 
   if (!res.ok) {
-    const errBody = await res.text();
-    console.error("[callGemini] Gemini error body", {
-      status: res.status,
-      durationMs,
-      bodyPreview: errBody.slice(0, 1000),
-    });
     throw new Error(`Gemini request failed: ${res.status}`);
   }
 
-  const data = await res.json();
-  const rawText = getGeminiText(data);
-  const maybeJson = extractFirstJsonObject(rawText);
+  let data: any;
+  try {
+    data = JSON.parse(responseText);
+  } catch (err) {
+    console.error("[callGemini] Failed to parse Gemini JSON response", err);
+    throw new Error("Gemini returned non-JSON response");
+  }
 
+  const rawText = getGeminiText(data);
+  console.log("[callGemini] Gemini candidate text preview", {
+    textPreview: clipForLog(rawText),
+    textLength: rawText.length,
+  });
+
+  const maybeJson = extractFirstJsonObject(rawText);
   if (!maybeJson) {
-    console.warn("[callGemini] No JSON object found in Gemini response", {
-      rawTextLength: rawText.length,
-      rawPreview: rawText.slice(0, 300),
+    console.warn("[callGemini] No JSON object found in Gemini candidate text");
+    return [];
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(maybeJson);
+  } catch (err) {
+    console.error("[callGemini] Failed to parse extracted JSON object", {
+      extractedPreview: clipForLog(maybeJson),
+      err: String(err),
     });
     return [];
   }
 
-  const parsed = JSON.parse(maybeJson);
+  console.log("[callGemini] Final parsed JSON", {
+    jsonPreview: clipForLog(JSON.stringify(parsed)),
+  });
+
   const events = coerceEvents(parsed);
   console.log("[callGemini] Parsed events count:", events.length);
   return events;
@@ -331,4 +421,3 @@ export default {
     return Response.json({ ok: true, ...result });
   },
 };
-
