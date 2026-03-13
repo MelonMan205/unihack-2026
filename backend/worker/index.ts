@@ -1,223 +1,97 @@
-import urlsConfig from "./urls.json";
-
-interface Env {
-  GEMINI_API_KEY: string;
-  SUPABASE_URL: string;
-  SUPABASE_SERVICE_ROLE_KEY: string;
-  SUPABASE_KEY?: string;
-}
-
-declare const HTMLRewriter: {
-  new (): {
-    on(selector: string, handlers: { element: (el: any) => void }): any;
-    transform(response: Response): Response;
-  };
+export default {
+  async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
+    console.log("[scheduled] Worker triggered");
+    const urls = parseUrlsFromEnv(env);
+    console.log("[scheduled] URLs from env:", urls);
+    if (!urls.length) {
+      console.warn("[scheduled] No URLs found in env.URLS_JSON");
+      return;
+    }
+    try {
+      const result = await runCrawl(urls, env);
+      console.log("[scheduled] runCrawl result:", result);
+    } catch (err) {
+      console.error("[scheduled] Error in runCrawl:", err);
+    }
+  },
+  async fetch(request: Request, env: Env): Promise<Response> {
+    console.log("[fetch] Worker fetch triggered, method:", request.method);
+    if (request.method === "GET") {
+      return Response.json({ ok: true, message: "Worker is running" });
+    }
+    if (request.method !== "POST") {
+      console.warn("[fetch] Method not allowed:", request.method);
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+    let payload: { urls?: string[] } = {};
+    try {
+      payload = await request.json();
+      console.log("[fetch] Incoming payload:", payload);
+    } catch (err) {
+      console.warn("[fetch] Failed to parse JSON payload:", err);
+    }
+    const urls = Array.isArray(payload.urls) ? payload.urls : parseUrlsFromEnv(env);
+    console.log("[fetch] URLs to process:", urls);
+    if (!urls.length) {
+      console.warn("[fetch] No URLs provided in payload or env.URLS_JSON");
+      return Response.json(
+        { ok: false, error: "No urls provided. Send { urls: string[] } or set URLS_JSON secret." },
+        { status: 400 },
+      );
+    }
+    try {
+      const result = await runCrawl(urls, env);
+      console.log("[fetch] Crawl result:", result);
+      return Response.json({ ok: true, ...result });
+    } catch (err) {
+      console.error("[fetch] Error in runCrawl:", err);
+      return Response.json({ ok: false, error: "Internal error", details: String(err) }, { status: 500 });
+    }
+  },
 };
-
-type EventPin = {
-  title: string;
-  venue?: string;
-  time_label?: string;
-  photo_url?: string;
-  location?: string;
-  category?: string;
-  spontaneity_score?: number;
-  crowd_label?: string;
-  tags?: string[];
-  description?: string;
-  source_url: string;
-  created_at?: string;
-};
-
-async function sanitizeHTML(source: Response): Promise<string> {
-  // Use Workers' built-in HTMLRewriter (no npm import needed).
-  const rewriter = new HTMLRewriter()
-    .on("script", { element: (el) => el.remove() })
-    .on("style", { element: (el) => el.remove() })
-    .on("noscript", { element: (el) => el.remove() })
-    .on("nav", { element: (el) => el.remove() })
-    .on("footer", { element: (el) => el.remove() })
-    .on("aside", { element: (el) => el.remove() });
-
-  const rewritten = rewriter.transform(source);
-  return rewritten.text();
-}
-
-function extractFirstJsonObject(text: string): string | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-  return text.slice(start, end + 1);
-}
-
-function getGeminiText(data: any): string {
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-}
-
-function coerceEvents(payload: any): EventPin[] {
-  const events = Array.isArray(payload?.events) ? payload.events : [];
-  return events
-    .filter((item: any) => typeof item?.title === "string")
-    .map((item: any) => ({
-      title: item.title,
-      venue: item.venue,
-      time_label: item.time_label,
-      photo_url: item.photo_url,
-      location: item.location,
-      category: item.category,
-      spontaneity_score:
-        typeof item.spontaneity_score === "number"
-          ? item.spontaneity_score
-          : undefined,
-      crowd_label: item.crowd_label,
-      tags: Array.isArray(item.tags) ? item.tags.filter((x: any) => typeof x === "string") : undefined,
-      description: item.description,
-      source_url: "",
-      created_at: item.created_at,
-    }));
-}
-
-async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin[]> {
-  const prompt = [
-    "Extract events and venues from this HTML.",
-    "Return STRICT JSON only in this shape:",
-    '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","created_at":"string?"}],"links":["string?"]}',
-    `HTML:\n${cleanedHtml}`,
-  ].join("\n");
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
-    },
-  );
-
-  if (!res.ok) {
-    throw new Error(`Gemini request failed: ${res.status}`);
-  }
-
-  const data = await res.json();
-  const rawText = getGeminiText(data);
-  const maybeJson = extractFirstJsonObject(rawText);
-  if (!maybeJson) return [];
-  const parsed = JSON.parse(maybeJson);
-  return coerceEvents(parsed);
-}
-
-async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<void> {
-  if (!events.length) return;
-  const supabaseToken = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY;
-  if (!supabaseToken) {
-    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY)");
-  }
-
-  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/events`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: supabaseToken,
-      Authorization: `Bearer ${supabaseToken}`,
-      Prefer: "return=minimal",
-    },
-    body: JSON.stringify(events),
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Supabase insert failed (${res.status}): ${body}`);
-  }
-}
 
 async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; inserted: number }> {
   let processed = 0;
   let inserted = 0;
-
+  console.log("[runCrawl] URLs received:", urls);
   for (const url of urls) {
     try {
+      console.log("[runCrawl] Processing URL:", url);
       const source = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-      if (!source.ok) continue;
-
+      if (!source.ok) {
+        console.warn("[runCrawl] Fetch failed for URL:", url, "Status:", source.status);
+        continue;
+      }
       const cleaned = await sanitizeHTML(source);
+      console.log("[runCrawl] Cleaned HTML for URL:", url, cleaned.slice(0, 100));
       const events = await callGemini(cleaned, env.GEMINI_API_KEY);
+      console.log("[runCrawl] Gemini events for URL:", url, events);
       const eventsWithSource = events.map((event) => ({ ...event, source_url: url }));
       await insertEventsToSupabase(eventsWithSource, env);
-
       processed += 1;
       inserted += eventsWithSource.length;
+      console.log("[runCrawl] Inserted events for URL:", url, "Count:", eventsWithSource.length);
     } catch (err) {
-      console.error("Error processing url", url, err);
+      console.error("[runCrawl] Error processing url", url, err);
     }
   }
-
+  console.log("[runCrawl] Finished. Processed:", processed, "Inserted:", inserted);
   return { processed, inserted };
 }
 
-function getConfiguredUrls(): string[] {
-  const rawUrls = Array.isArray((urlsConfig as any)?.urls) ? (urlsConfig as any).urls : [];
-  return rawUrls
-    .filter((u: unknown) => typeof u === "string")
-    .map((u: string) => u.trim())
-    .filter((u: string) => u.length > 0);
+function parseUrlsFromEnv(env: Env): string[] {
+  if (!env.URLS_JSON) {
+    console.warn("[parseUrlsFromEnv] env.URLS_JSON is missing");
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(env.URLS_JSON);
+    const urls = Array.isArray(parsed) ? parsed.filter((u) => typeof u === "string") : [];
+    console.log("[parseUrlsFromEnv] Parsed URLs:", urls);
+    return urls;
+  } catch (err) {
+    console.error("[parseUrlsFromEnv] Failed to parse env.URLS_JSON:", env.URLS_JSON, err);
+    return [];
+  }
 }
-
-function isManualTriggerPath(pathname: string): boolean {
-  const segments = pathname.split("/").filter(Boolean);
-  const last = segments.length ? segments[segments.length - 1].toLowerCase() : "";
-  return last === "manual";
-}
-
-export default {
-  async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
-    const urls = getConfiguredUrls();
-    if (!urls.length) return;
-    await runCrawl(urls, env);
-  },
-
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (request.method === "GET" && isManualTriggerPath(url.pathname)) {
-      const urls = getConfiguredUrls();
-      if (!urls.length) {
-        return Response.json(
-          { ok: false, error: "No URLs configured in urls.json." },
-          { status: 400 },
-        );
-      }
-
-      const result = await runCrawl(urls, env);
-      return new Response(
-        [
-          "Manual scrape complete.",
-          `Processed URLs: ${result.processed}`,
-          `Inserted events: ${result.inserted}`,
-        ].join("\n"),
-        { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } },
-      );
-    }
-
-    if (request.method === "GET") {
-      return Response.json({ ok: true, message: "Worker is running" });
-    }
-
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
-    }
-
-    const payload = (await request.json().catch(() => ({}))) as { urls?: string[] };
-    const urls = Array.isArray(payload.urls) ? payload.urls : getConfiguredUrls();
-
-    if (!urls.length) {
-      return Response.json(
-        { ok: false, error: "No urls provided. Send { urls: string[] } or configure urls.json." },
-        { status: 400 },
-      );
-    }
-
-    const result = await runCrawl(urls, env);
-    return Response.json({ ok: true, ...result });
-  },
-};
 
