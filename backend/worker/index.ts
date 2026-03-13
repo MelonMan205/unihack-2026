@@ -487,7 +487,9 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
 async function runCrawl(urls: string[], env: Env, includeEventsInResult = false): Promise<CrawlResult> {
   let processed = 0;
   let inserted = 0;
-  let eventsForResult: Omit<EventPin, "visit_more_url">[] | undefined = undefined;
+  let eventsForResult: Omit<EventPin, "visit_more_url">[] | undefined = includeEventsInResult
+    ? []
+    : undefined;
   console.log("[runCrawl] Starting crawl. URL count:", urls.length);
 
   if (!urls.length) {
@@ -588,7 +590,12 @@ export default {
         console.log("[manual] Starting crawl");
         const result = await runCrawl(urls, env, true);
         console.log("[manual] Crawl finished:", result);
-        return Response.json({ ok: true, ...result });
+        return Response.json({
+          ok: true,
+          processed: result.processed,
+          inserted: result.inserted,
+          events: result.events ?? [],
+        });
       } catch (err) {
         console.error("[manual] Crawl failed:", err);
         return Response.json(
