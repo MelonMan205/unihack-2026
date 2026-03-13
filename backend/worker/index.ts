@@ -33,9 +33,6 @@ export default {
     return Response.json({ ok: true, ...result });
   },
 };
-```
-
-```typescript path=/home/luke/code/projects/unihack-2026/backend/worker/index.ts start_line=132 end_line=154
 async function runCrawl(urls: string[], env: Env): Promise<{ processed: number; inserted: number }> {
   let processed = 0;
   let inserted = 0;
