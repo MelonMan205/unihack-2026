@@ -39,7 +39,7 @@ const GEMINI_URL =
  * Max tokens budget for the full prompt.
  * Adjust this based on observed latency/errors.
  */
-const MAX_PROMPT_TOKENS = 12000;
+const MAX_PROMPT_TOKENS = 8000;
 
 /**
  * Approx chars per token for English/web text.
@@ -51,6 +51,17 @@ const CHARS_PER_TOKEN_ESTIMATE = 4;
  * Reserve tokens for instruction/schema overhead (non-HTML text).
  */
 const PROMPT_OVERHEAD_TOKENS = 1200;
+
+/**
+ * Keep enrichment prompts tighter than extraction prompts to avoid 524s.
+ */
+const MAX_POPULATION_PROMPT_TOKENS = 6000;
+const POPULATION_PROMPT_OVERHEAD_TOKENS = 1600;
+const MAX_POPULATION_SOURCE_CHARS_TOTAL = Math.max(
+  1,
+  (MAX_POPULATION_PROMPT_TOKENS - POPULATION_PROMPT_OVERHEAD_TOKENS) * CHARS_PER_TOKEN_ESTIMATE,
+);
+const MAX_SOURCE_CONTENT_CHARS_PER_EVENT = 2500;
 
 /**
  * Derived max HTML chars allowed before calling Gemini.
@@ -72,6 +83,14 @@ function estimateTokensFromChars(charCount: number): number {
 function clipForLog(text: string, max = LOG_PREVIEW_CHARS): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}... [truncated ${text.length - max} chars]`;
+}
+
+function compactWebText(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function buildPrompt(cleanedHtml: string): string {
@@ -140,13 +159,20 @@ async function sanitizeHTML(source: Response): Promise<string> {
     .on("noscript", { element: (el: HtmlElement) => el.remove() })
     .on("nav", { element: (el: HtmlElement) => el.remove() })
     .on("footer", { element: (el: HtmlElement) => el.remove() })
-    .on("aside", { element: (el: HtmlElement) => el.remove() });
+    .on("aside", { element: (el: HtmlElement) => el.remove() })
+    .on("svg", { element: (el: HtmlElement) => el.remove() })
+    .on("form", { element: (el: HtmlElement) => el.remove() })
+    .on("header", { element: (el: HtmlElement) => el.remove() });
 
   const rewritten = rewriter.transform(source);
-  const text = await rewritten.text();
+  const raw = await rewritten.text();
+  const compacted = compactWebText(raw);
+  const text = compacted.slice(0, MAX_HTML_CHARS * 2);
   console.log("[sanitizeHTML] Sanitization complete", {
-    lengthChars: text.length,
-    tokensEst: estimateTokensFromChars(text.length),
+    rawChars: raw.length,
+    compactedChars: compacted.length,
+    finalChars: text.length,
+    finalTokensEst: estimateTokensFromChars(text.length),
   });
   return text;
 }
@@ -222,6 +248,43 @@ function resolveUrl(baseUrl: string, maybeUrl?: string): string {
   } catch {
     return baseUrl;
   }
+}
+
+type PopulationSourceItem = {
+  event_index: number;
+  title: string;
+  venue: string;
+  time_label: string;
+  location: string;
+  category: string;
+  source_url: string;
+  source_content: string;
+};
+
+function applyPopulationSourceBudget(items: PopulationSourceItem[]): PopulationSourceItem[] {
+  if (!items.length) return items;
+
+  const perEventBudget = Math.max(
+    400,
+    Math.min(
+      MAX_SOURCE_CONTENT_CHARS_PER_EVENT,
+      Math.floor(MAX_POPULATION_SOURCE_CHARS_TOTAL / items.length),
+    ),
+  );
+
+  const budgeted = items.map((item) => ({
+    ...item,
+    source_content: item.source_content.slice(0, perEventBudget),
+  }));
+
+  console.log("[applyPopulationSourceBudget] Applied source budget", {
+    eventCount: items.length,
+    perEventBudget,
+    totalBudgetChars: MAX_POPULATION_SOURCE_CHARS_TOTAL,
+    totalAfterChars: budgeted.reduce((acc, item) => acc + item.source_content.length, 0),
+  });
+
+  return budgeted;
 }
 
 async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin[]> {
@@ -315,7 +378,7 @@ async function enrichEventsWithPopulationLayer(
     throw new Error("Missing GEMINI_API_KEY in environment");
   }
 
-  const sourcePayload = await Promise.all(
+  const sourcePayloadRaw = await Promise.all(
     events.map(async (event, index) => {
       const preferredUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
       let sourceContent = "";
@@ -347,10 +410,11 @@ async function enrichEventsWithPopulationLayer(
         location: event.location ?? "",
         category: event.category ?? "",
         source_url: preferredUrl,
-        source_content: clipForLog(sourceContent, 6000),
+        source_content: compactWebText(sourceContent).slice(0, MAX_SOURCE_CONTENT_CHARS_PER_EVENT),
       };
     }),
   );
+  let sourcePayload = applyPopulationSourceBudget(sourcePayloadRaw);
 
   console.log("[enrichEventsWithPopulationLayer] Source payload built", {
     eventCount: events.length,
@@ -358,10 +422,26 @@ async function enrichEventsWithPopulationLayer(
     sourceUrls: sourcePayload.map((item) => item.source_url),
   });
 
-  const prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
+  let prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
+  let promptTokensEst = estimateTokensFromChars(prompt.length);
+
+  if (promptTokensEst > MAX_POPULATION_PROMPT_TOKENS) {
+    let perEventBudget = Math.max(200, Math.floor(MAX_SOURCE_CONTENT_CHARS_PER_EVENT / 2));
+    while (promptTokensEst > MAX_POPULATION_PROMPT_TOKENS && perEventBudget >= 200) {
+      sourcePayload = sourcePayload.map((item) => ({
+        ...item,
+        source_content: item.source_content.slice(0, perEventBudget),
+      }));
+      prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
+      promptTokensEst = estimateTokensFromChars(prompt.length);
+      perEventBudget = Math.floor(perEventBudget * 0.7);
+    }
+  }
+
   console.log("[enrichEventsWithPopulationLayer] Enrichment prompt ready", {
     promptChars: prompt.length,
-    promptTokensEst: estimateTokensFromChars(prompt.length),
+    promptTokensEst,
+    maxPopulationPromptTokens: MAX_POPULATION_PROMPT_TOKENS,
   });
 
   const startedAt = Date.now();
