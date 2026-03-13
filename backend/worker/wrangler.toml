@@ -4,13 +4,9 @@ main = "index.ts"
 compatibility_date = "2026-03-13"
 
 [vars]
-<<<<<<< HEAD
 GEMINI_API_KEY = "api key here"
 SUPABASE_SERVICE_ROLE_KEY = " Service role"
 SUPABASE_URL = "https://wgyleywyxkbhbqldocif.supabase.co"
-=======
-GEMINI_API_KEY = "you api key"
->>>>>>> a2ded5b (set up local wrangler)
 
 [observability]
 [observability.logs]

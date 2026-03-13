@@ -7,7 +7,10 @@ interface Env {
   SUPABASE_KEY?: string;
 }
 
-type HtmlElement = { remove: () => void };
+type HtmlElement = {
+  remove: () => void;
+  getAttribute: (name: string) => string | null;
+};
 
 declare const HTMLRewriter: {
   new (): {
@@ -95,7 +98,10 @@ function compactWebText(text: string): string {
 
 function buildPrompt(cleanedHtml: string): string {
   return [
-    "Extract events and venues from this HTML.",
+    "Extract ONLY real event listings from this HTML.",
+    "Do not return navigation/header/footer pages, social links, or generic site links.",
+    "Each event must include a specific title and at least one of: date/time, venue, location, or event detail URL.",
+    "If there are no real events visible in this HTML, return events as an empty array.",
     "Return STRICT JSON only in this shape:",
     '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","visit_more_url":"string?","created_at":"string?"}],"links":["string?"]}',
     `HTML:\n${cleanedHtml}`,
@@ -154,7 +160,14 @@ function enforceHtmlTokenBudget(html: string): {
 async function sanitizeHTML(source: Response): Promise<string> {
   console.log("[sanitizeHTML] Starting HTML sanitization");
   const rewriter = new HTMLRewriter()
-    .on("script", { element: (el: HtmlElement) => el.remove() })
+    .on("script", {
+      element: (el: HtmlElement) => {
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        // Keep structured data payloads that often contain event metadata.
+        if (type === "application/ld+json") return;
+        el.remove();
+      },
+    })
     .on("style", { element: (el: HtmlElement) => el.remove() })
     .on("noscript", { element: (el: HtmlElement) => el.remove() })
     .on("nav", { element: (el: HtmlElement) => el.remove() })
@@ -212,7 +225,46 @@ function coerceEvents(payload: any): EventPin[] {
         typeof item.created_at === "string" && item.created_at.trim().length > 0
           ? item.created_at.trim()
           : undefined,
-    }));
+    }))
+    .filter((item) => {
+      const hasUsefulSignal =
+        Boolean(item.time_label?.trim()) ||
+        Boolean(item.venue?.trim()) ||
+        Boolean(item.location?.trim()) ||
+        Boolean(item.visit_more_url?.trim()) ||
+        Boolean(item.source_url?.trim());
+      return item.title.trim().length > 0 && hasUsefulSignal;
+    });
+}
+
+function normalizeEventForInsert(event: EventPin): EventPin {
+  const normalized: EventPin = {
+    ...event,
+    title: (event.title ?? "").trim(),
+    venue: event.venue?.trim() || undefined,
+    time_label: event.time_label?.trim() || undefined,
+    photo_url: event.photo_url?.trim() || undefined,
+    location: event.location?.trim() || undefined,
+    category: event.category?.trim() || undefined,
+    crowd_label: event.crowd_label?.trim() || undefined,
+    description: event.description?.trim() || undefined,
+    source_url: event.source_url?.trim() || "",
+    visit_more_url: event.visit_more_url?.trim() || undefined,
+    tags: Array.isArray(event.tags)
+      ? event.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0)
+      : undefined,
+    spontaneity_score:
+      typeof event.spontaneity_score === "number"
+        ? Math.max(0, Math.min(100, Math.round(event.spontaneity_score)))
+        : undefined,
+  };
+
+  if (normalized.created_at) {
+    const dt = new Date(normalized.created_at);
+    normalized.created_at = Number.isNaN(dt.getTime()) ? undefined : dt.toISOString();
+  }
+
+  return normalized;
 }
 
 type EventPopulationPatch = {
@@ -543,13 +595,26 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
     return;
   }
 
-  const supabaseToken = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY;
+  const supabaseToken = (env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY || "").trim();
+  const supabaseUrl = (env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
   if (!supabaseToken) {
     throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY)");
   }
+  if (!supabaseUrl) {
+    throw new Error("Missing SUPABASE_URL");
+  }
 
-  console.log("[insertEventsToSupabase] Inserting events:", events.length);
-  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/events`, {
+  const sanitizedEvents = events
+    .map(normalizeEventForInsert)
+    .filter((event) => event.title.length > 0 && event.source_url.length > 0);
+
+  if (!sanitizedEvents.length) {
+    console.warn("[insertEventsToSupabase] All events were filtered out after sanitization");
+    return;
+  }
+
+  console.log("[insertEventsToSupabase] Inserting events:", sanitizedEvents.length);
+  const res = await fetch(`${supabaseUrl}/rest/v1/events`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -557,7 +622,7 @@ async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<voi
       Authorization: `Bearer ${supabaseToken}`,
       Prefer: "return=minimal",
     },
-    body: JSON.stringify(events),
+    body: JSON.stringify(sanitizedEvents),
   });
 
   console.log("[insertEventsToSupabase] Supabase response status:", res.status);
