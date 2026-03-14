@@ -1,0 +1,11 @@
+name = "unihack-2026-waitlist"
+main = "index.ts"
+compatibility_date = "2026-03-14"
+
+[vars]
+SUPABASE_URL = "https://wgyleywyxkbhbqldocif.supabase.co"
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
