@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { divIcon, type LatLngExpression } from "leaflet";
 import { MapContainer, Marker, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
 import type { EventPin } from "@/mock/events";
+import { distanceInKm } from "@/utils/geo";
 
 type MarkerDatum =
   | { type: "event"; event: EventPin }
@@ -17,6 +18,7 @@ type MapViewProps = {
 
 const INITIAL_ZOOM = 14;
 const CLUSTER_ZOOM_THRESHOLD = 13;
+const MIN_ZOOM = 3;
 
 const categoryCode: Record<EventPin["category"], string> = {
   music: "MU",
@@ -35,6 +37,18 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#039;");
 }
 
+function trimText(value: string | undefined, maxChars: number): string {
+  if (!value) {
+    return "";
+  }
+
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  return `${value.slice(0, maxChars - 1)}…`;
+}
+
 function ZoomWatcher({ onZoom }: { onZoom: (zoom: number) => void }) {
   useMapEvents({
     zoomend: (event) => onZoom(event.target.getZoom()),
@@ -49,7 +63,7 @@ function eventIcon(event: EventPin) {
     html: `
       <div class="photo-pin">
         <div class="photo-pin-card">
-          <img src="${event.photoUrl}" alt="${safeTitle}" loading="lazy" />
+          <img src="${event.photoUrl}" alt="${safeTitle}" loading="lazy" decoding="async" />
           <div class="photo-pin-overlay"></div>
           <span class="photo-pin-label">${categoryCode[event.category]}</span>
         </div>
@@ -109,6 +123,10 @@ export function MapView({ events, userLocation, onSelectEvent }: MapViewProps) {
     <MapContainer
       center={userLocation as LatLngExpression}
       zoom={INITIAL_ZOOM}
+      minZoom={MIN_ZOOM}
+      zoomSnap={0.2}
+      zoomDelta={0.4}
+      wheelPxPerZoomLevel={80}
       className="apple-map h-[100dvh] w-full"
       zoomControl
     >
@@ -116,6 +134,7 @@ export function MapView({ events, userLocation, onSelectEvent }: MapViewProps) {
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
         url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+        noWrap
       />
 
       <Marker
@@ -138,15 +157,50 @@ export function MapView({ events, userLocation, onSelectEvent }: MapViewProps) {
             icon={eventIcon(marker.event)}
             eventHandlers={{ click: () => onSelectEvent(marker.event) }}
           >
-            <Tooltip direction="top">
-              <strong>{marker.event.title}</strong>
-              <br />
-              {marker.event.timeLabel}
+            <Tooltip direction="top" offset={[0, -18]} className="event-hover-card" opacity={1}>
+              <div className="event-hover-card__title">{marker.event.title}</div>
+              <div className="event-hover-card__image-wrap">
+                
+              </div>
+              <div className="event-hover-card__meta">
+                <span className="event-hover-card__dot" />
+                <span>{marker.event.timeLabel}</span>
+              </div>
+              <div className="event-hover-card__meta">
+                <span className="event-hover-card__dot" />
+                <span>{marker.event.venue}</span>
+              </div>
+              <div className="event-hover-card__pill-row">
+                <span className="event-hover-card__pill event-hover-card__pill--highlight">
+                  {marker.event.timeLabel}
+                </span>
+                <span className="event-hover-card__pill">
+                  {distanceInKm(marker.event.location, userLocation).toFixed(1)} km
+                </span>
+                <span className="event-hover-card__pill">
+                  Spontaneity {marker.event.spontaneityScore}/100
+                </span>
+                <span className="event-hover-card__pill">{marker.event.crowdLabel}</span>
+              </div>
+              {marker.event.description ? (
+                <div className="event-hover-card__desc">{trimText(marker.event.description, 88)}</div>
+              ) : null}
+              {marker.event.tags.length > 0 ? (
+                <div className="event-hover-card__tags">
+                  {marker.event.tags.slice(0, 3).map((tag) => (
+                    <span key={tag} className="event-hover-card__tag">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </Tooltip>
           </Marker>
         ) : (
           <Marker key={marker.key} position={marker.location} icon={clusterIcon(marker.count)}>
-            <Tooltip direction="top">{marker.count} events in this area</Tooltip>
+            <Tooltip direction="top" offset={[0, -10]} className="event-hover-card event-hover-card--compact" opacity={1}>
+              {marker.count} events in this area
+            </Tooltip>
           </Marker>
         ),
       )}

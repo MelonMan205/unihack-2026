@@ -16,7 +16,10 @@ export const SheetOverlay = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof Dialog.Overlay>
 >(({ className, ...props }, ref) => (
   <Dialog.Overlay
-    className={cn("fixed inset-0 z-50 bg-zinc-950/40 backdrop-blur-[1px]", className)}
+    className={cn(
+      "fixed inset-0 z-[1390] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.24),rgba(15,23,42,0.45))] backdrop-blur-[2px]",
+      className,
+    )}
     {...props}
     ref={ref}
   />
@@ -36,7 +39,7 @@ export const SheetContent = React.forwardRef<
     <Dialog.Content
       ref={ref}
       className={cn(
-        "fixed z-50 bg-white shadow-2xl transition ease-out",
+        "fixed z-[1400] bg-white shadow-2xl transition ease-out",
         side === "bottom" ? "inset-x-0 bottom-0" : "",
         className,
       )}

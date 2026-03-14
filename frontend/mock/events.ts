@@ -7,6 +7,7 @@ export type EventPin = {
   timeLabel: string;
   photoUrl: string;
   sourceUrl?: string;
+  description?: string;
   location: [number, number];
   category: Category;
   spontaneityScore: number;
