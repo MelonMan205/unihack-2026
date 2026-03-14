@@ -17,7 +17,7 @@ export const SheetOverlay = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <Dialog.Overlay
     className={cn(
-      "fixed inset-0 z-[1390] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.24),rgba(15,23,42,0.45))] backdrop-blur-[2px]",
+      "fixed inset-0 z-[1390] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.24),rgba(15,23,42,0.45))] data-[state=open]:animate-[sheetOverlayIn_360ms_cubic-bezier(0.22,1,0.36,1)] data-[state=closed]:animate-[sheetOverlayOut_240ms_cubic-bezier(0.4,0,1,1)]",
       className,
     )}
     {...props}
@@ -39,7 +39,7 @@ export const SheetContent = React.forwardRef<
     <Dialog.Content
       ref={ref}
       className={cn(
-        "fixed z-[1400] bg-white shadow-2xl transition ease-out",
+        "fixed z-[1400] bg-white shadow-2xl will-change-transform data-[state=open]:animate-[sheetContentIn_420ms_cubic-bezier(0.22,1,0.36,1)] data-[state=closed]:animate-[sheetContentOut_240ms_cubic-bezier(0.4,0,1,1)]",
         side === "bottom" ? "inset-x-0 bottom-0" : "",
         className,
       )}

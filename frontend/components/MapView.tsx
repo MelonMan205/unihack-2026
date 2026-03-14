@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { divIcon, type LatLngExpression } from "leaflet";
-import { MapContainer, Marker, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
+import { Circle, MapContainer, Marker, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
 import type { EventPin } from "@/mock/events";
 import { distanceInKm } from "@/utils/geo";
 
@@ -13,7 +13,10 @@ type MarkerDatum =
 type MapViewProps = {
   events: EventPin[];
   userLocation: [number, number];
+  radiusKm?: number;
   onSelectEvent: (event: EventPin) => void;
+  isPickingLocation?: boolean;
+  onPickLocation?: (location: [number, number]) => void;
 };
 
 const INITIAL_ZOOM = 14;
@@ -52,6 +55,25 @@ function trimText(value: string | undefined, maxChars: number): string {
 function ZoomWatcher({ onZoom }: { onZoom: (zoom: number) => void }) {
   useMapEvents({
     zoomend: (event) => onZoom(event.target.getZoom()),
+  });
+
+  return null;
+}
+
+function LocationPicker({
+  enabled,
+  onPickLocation,
+}: {
+  enabled: boolean;
+  onPickLocation?: (location: [number, number]) => void;
+}) {
+  useMapEvents({
+    click: (event) => {
+      if (!enabled || !onPickLocation) {
+        return;
+      }
+      onPickLocation([event.latlng.lat, event.latlng.lng]);
+    },
   });
 
   return null;
@@ -115,7 +137,14 @@ function buildMarkers(events: EventPin[], zoom: number): MarkerDatum[] {
   return markers;
 }
 
-export function MapView({ events, userLocation, onSelectEvent }: MapViewProps) {
+export function MapView({
+  events,
+  userLocation,
+  radiusKm = 1,
+  onSelectEvent,
+  isPickingLocation = false,
+  onPickLocation,
+}: MapViewProps) {
   const [zoom, setZoom] = useState(INITIAL_ZOOM);
   const markers = useMemo(() => buildMarkers(events, zoom), [events, zoom]);
 
@@ -127,14 +156,27 @@ export function MapView({ events, userLocation, onSelectEvent }: MapViewProps) {
       zoomSnap={0.2}
       zoomDelta={0.4}
       wheelPxPerZoomLevel={80}
-      className="apple-map h-[100dvh] w-full"
+      className={`apple-map h-[100dvh] w-full ${isPickingLocation ? "apple-map--pick-location" : ""}`}
       zoomControl
     >
       <ZoomWatcher onZoom={setZoom} />
+      <LocationPicker enabled={isPickingLocation} onPickLocation={onPickLocation} />
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
         url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
         noWrap
+      />
+
+      <Circle
+        center={userLocation}
+        radius={radiusKm * 1000}
+        pathOptions={{
+          color: "#f59e0b",
+          weight: 1.5,
+          opacity: 0.75,
+          fillColor: "#facc15",
+          fillOpacity: 0.14,
+        }}
       />
 
       <Marker
@@ -155,7 +197,14 @@ export function MapView({ events, userLocation, onSelectEvent }: MapViewProps) {
             key={marker.event.id}
             position={marker.event.location}
             icon={eventIcon(marker.event)}
-            eventHandlers={{ click: () => onSelectEvent(marker.event) }}
+            eventHandlers={{
+              click: () => {
+                if (isPickingLocation) {
+                  return;
+                }
+                onSelectEvent(marker.event);
+              },
+            }}
           >
             <Tooltip direction="top" offset={[0, -18]} className="event-hover-card" opacity={1}>
               <div className="event-hover-card__title">{marker.event.title}</div>
