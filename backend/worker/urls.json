@@ -2,13 +2,13 @@
     "urls": [
         "https://events.unimelb.edu.au/",
         "https://www.rmit.edu.au/events",
-        "https://www.meetup.com",
+        "https://www.meetup.com/find/?location=au--melbourne&source=EVENTS",
         "https://www.timeout.com/melbourne",
         "https://www.austadiums.com/city/melbourne/events",
         "https://www.palaistheatre.com.au/whats-on",
         "https://www.cricket.com.au/matches?year=2026&isCompleted=0",
         "https://www.mcg.org.au/events",
-        "https://www.nbl.com.au/schedule?c4895a7e_page=2",
+        "https://www.eventbrite.com.au/d/australia--melbourne/events/",
         "https://www.melbournepark.com.au/events/",
         "https://connect.ngv.vic.gov.au/",
         "https://museumsvictoria.com.au/melbournemuseum/whats-on/",
@@ -16,7 +16,7 @@
         "https://www.acmi.net.au/whats-on/",
         "https://beat.com.au/gig-guide/",
         "https://fedsquare.com/whats-on",
-        "https://www.monash.edu/students/campus-life/events",
+        "https://www.eventfinda.com.au/whatson/events/melbourne",
         "https://whatson.melbourne.vic.gov.au/"
     ]
 }
