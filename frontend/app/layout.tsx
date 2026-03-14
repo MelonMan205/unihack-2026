@@ -12,6 +12,11 @@ const appFont = Space_Mono({
 export const metadata: Metadata = {
   title: "Spontaneous Events Map",
   description: "Discover spontaneous events near you tonight.",
+  icons: {
+    icon: "/haps-logo.svg",
+    shortcut: "/haps-logo.svg",
+    apple: "/haps-logo.svg",
+  },
 };
 
 export const viewport: Viewport = {
