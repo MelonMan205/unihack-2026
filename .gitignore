@@ -5,5 +5,5 @@ package.json
 !frontend/package.json
 !frontend/package-lock.json
 
-.wrangler
-.dev.vars
+*.wrangler
+*.dev.vars

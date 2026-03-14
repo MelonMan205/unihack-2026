@@ -2,960 +2,535 @@ import urlsConfig from "./urls.json";
 
 interface Env {
   GEMINI_API_KEY: string;
-  SUPABASE_URL: string;
-  SUPABASE_SERVICE_ROLE_KEY: string;
-  SUPABASE_KEY?: string;
+  CLOUDFLARE_ACCOUNT_ID: string;
+  CLOUDFLARE_API_TOKEN: string;
 }
 
-type HtmlElement = {
-  remove: () => void;
-  getAttribute: (name: string) => string | null;
+type EventCandidate = {
+  url: string;
+  score: number;
+  reason: string;
 };
 
-declare const HTMLRewriter: {
-  new (): {
-    on(selector: string, handlers: { element: (el: HtmlElement) => void }): any;
-    transform(response: Response): Response;
-  };
-};
-
-type EventPin = {
-  title: string;
-  venue?: string;
-  time_label?: string;
-  photo_url?: string;
-  location?: string;
-  category?: string;
-  spontaneity_score?: number;
-  crowd_label?: string;
-  tags?: string[];
-  description?: string;
-  source_url: string;
-  visit_more_url?: string;
-  created_at?: string;
-};
-
-type SupabaseEventRow = {
-  title: string;
-  venue: string | null;
-  time_label: string | null;
-  photo_url: string | null;
-  location: string | null;
-  category: string | null;
-  spontaneity_score: number | null;
-  crowd_label: string | null;
-  tags: string[] | null;
+type ParsedEvent = {
+  event_name: string | null;
   description: string | null;
+  date: string | null;
+  time: string | null;
+  location: string | null;
   source_url: string;
-  created_at: string;
 };
-type SupabaseInsertRow = Record<string, unknown>;
+
+type ResolvedEnv = {
+  gemini: string;
+  accountId: string;
+  cfToken: string;
+};
 
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-
-/**
- * Max tokens budget for the full prompt.
- * Adjust this based on observed latency/errors.
- */
-const MAX_PROMPT_TOKENS = 8000;
-
-/**
- * Approx chars per token for English/web text.
- * 4 is a common conservative approximation.
- */
-const CHARS_PER_TOKEN_ESTIMATE = 4;
-
-/**
- * Reserve tokens for instruction/schema overhead (non-HTML text).
- */
-const PROMPT_OVERHEAD_TOKENS = 1200;
-
-/**
- * Keep enrichment prompts tighter than extraction prompts to avoid 524s.
- */
-const MAX_POPULATION_PROMPT_TOKENS = 6000;
-const POPULATION_PROMPT_OVERHEAD_TOKENS = 1600;
-const MAX_POPULATION_SOURCE_CHARS_TOTAL = Math.max(
-  1,
-  (MAX_POPULATION_PROMPT_TOKENS - POPULATION_PROMPT_OVERHEAD_TOKENS) * CHARS_PER_TOKEN_ESTIMATE,
-);
-const MAX_SOURCE_CONTENT_CHARS_PER_EVENT = 2500;
-
-/**
- * Derived max HTML chars allowed before calling Gemini.
- */
-const MAX_HTML_CHARS = Math.max(
-  1,
-  (MAX_PROMPT_TOKENS - PROMPT_OVERHEAD_TOKENS) * CHARS_PER_TOKEN_ESTIMATE,
-);
-
-/**
- * Hard cap log preview sizes to avoid huge observability payloads.
- */
-const LOG_PREVIEW_CHARS = 3000;
-
-function estimateTokensFromChars(charCount: number): number {
-  return Math.ceil(charCount / CHARS_PER_TOKEN_ESTIMATE);
-}
-
-function clipForLog(text: string, max = LOG_PREVIEW_CHARS): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}... [truncated ${text.length - max} chars]`;
-}
-
-function compactWebText(text: string): string {
-  return text
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function buildPrompt(cleanedHtml: string): string {
-  return [
-    "Extract ONLY real event listings from this HTML.",
-    "Do not return navigation/header/footer pages, social links, or generic site links.",
-    "Each event must include a specific title and at least one of: date/time, venue, location, or event detail URL.",
-    "If there are no real events visible in this HTML, return events as an empty array.",
-    "Return STRICT JSON only in this shape:",
-    '{"events":[{"title":"string","venue":"string?","time_label":"string?","photo_url":"string?","location":"string?","category":"string?","spontaneity_score":"number?","crowd_label":"string?","tags":["string?"],"description":"string?","source_url":"string?","visit_more_url":"string?","created_at":"string?"}],"links":["string?"]}',
-    `HTML:\n${cleanedHtml}`,
-  ].join("\n");
-}
-
-function buildPopulationPrompt(payload: string): string {
-  return [
-    "You are enriching extracted events with source content.",
-    "Use each event's source_content to infer missing details and improve quality.",
-    "For each event return only these fields: description, crowd_label, tags, spontaneity_score.",
-    "Rules:",
-    '- description: concise 1-3 sentences; use source_content facts; if unknown return "".',
-    '- crowd_label: one of ["quiet","moderate","busy","packed"] or "" if unknown.',
-    "- tags: 2-6 short lowercase tags.",
-    "- spontaneity_score: integer 0-100 based on effort/planning needed (higher = more spontaneous).",
-    "Return STRICT JSON only in this exact shape:",
-    '{"events":[{"event_index":"number","description":"string","crowd_label":"string","tags":["string"],"spontaneity_score":"number"}]}',
-    `INPUT:\n${payload}`,
-  ].join("\n");
-}
-
-function enforceHtmlTokenBudget(html: string): {
-  html: string;
-  truncated: boolean;
-  originalChars: number;
-  finalChars: number;
-  originalTokensEst: number;
-  finalTokensEst: number;
-} {
-  const originalChars = html.length;
-  const originalTokensEst = estimateTokensFromChars(originalChars);
-
-  if (originalChars <= MAX_HTML_CHARS) {
-    return {
-      html,
-      truncated: false,
-      originalChars,
-      finalChars: originalChars,
-      originalTokensEst,
-      finalTokensEst: originalTokensEst,
-    };
-  }
-
-  const sliced = html.slice(0, MAX_HTML_CHARS);
-  return {
-    html: sliced,
-    truncated: true,
-    originalChars,
-    finalChars: sliced.length,
-    originalTokensEst,
-    finalTokensEst: estimateTokensFromChars(sliced.length),
-  };
-}
-
-async function sanitizeHTML(source: Response): Promise<string> {
-  console.log("[sanitizeHTML] Starting HTML sanitization");
-  const rewriter = new HTMLRewriter()
-    .on("script", {
-      element: (el: HtmlElement) => {
-        const type = (el.getAttribute("type") || "").toLowerCase();
-        // Keep structured data payloads that often contain event metadata.
-        if (type === "application/ld+json") return;
-        el.remove();
-      },
-    })
-    .on("style", { element: (el: HtmlElement) => el.remove() })
-    .on("noscript", { element: (el: HtmlElement) => el.remove() })
-    .on("nav", { element: (el: HtmlElement) => el.remove() })
-    .on("footer", { element: (el: HtmlElement) => el.remove() })
-    .on("aside", { element: (el: HtmlElement) => el.remove() })
-    .on("svg", { element: (el: HtmlElement) => el.remove() })
-    .on("form", { element: (el: HtmlElement) => el.remove() })
-    .on("header", { element: (el: HtmlElement) => el.remove() });
-
-  const rewritten = rewriter.transform(source);
-  const raw = await rewritten.text();
-  const compacted = compactWebText(raw);
-  const text = compacted.slice(0, MAX_HTML_CHARS * 2);
-  console.log("[sanitizeHTML] Sanitization complete", {
-    rawChars: raw.length,
-    compactedChars: compacted.length,
-    finalChars: text.length,
-    finalTokensEst: estimateTokensFromChars(text.length),
-  });
-  return text;
-}
-
-function extractFirstJsonObject(text: string): string | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-  return text.slice(start, end + 1);
-}
-
-function getGeminiText(data: any): string {
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-}
-
-function coerceEvents(payload: any): EventPin[] {
-  const events = Array.isArray(payload?.events) ? payload.events : [];
-  return events
-    .filter((item: any) => typeof item?.title === "string")
-    .map((item: any) => ({
-      title: item.title,
-      venue: item.venue,
-      time_label: item.time_label,
-      photo_url: item.photo_url,
-      location: item.location,
-      category: item.category,
-      spontaneity_score:
-        typeof item.spontaneity_score === "number" ? item.spontaneity_score : undefined,
-      crowd_label: item.crowd_label,
-      tags: Array.isArray(item.tags)
-        ? item.tags.filter((x: any) => typeof x === "string")
-        : undefined,
-      description: item.description,
-      source_url: typeof item.source_url === "string" ? item.source_url : "",
-      visit_more_url: typeof item.visit_more_url === "string" ? item.visit_more_url : undefined,
-      created_at:
-        typeof item.created_at === "string" && item.created_at.trim().length > 0
-          ? item.created_at.trim()
-          : undefined,
-    }))
-    .filter((item) => {
-      const hasUsefulSignal =
-        Boolean(item.time_label?.trim()) ||
-        Boolean(item.venue?.trim()) ||
-        Boolean(item.location?.trim()) ||
-        Boolean(item.visit_more_url?.trim()) ||
-        Boolean(item.source_url?.trim());
-      return item.title.trim().length > 0 && hasUsefulSignal;
-    });
-}
-
-function normalizeEventForInsert(event: EventPin): SupabaseEventRow {
-  const createdAtRaw = event.created_at?.trim();
-  const createdAtDate = createdAtRaw ? new Date(createdAtRaw) : null;
-  const created_at =
-    createdAtDate && !Number.isNaN(createdAtDate.getTime())
-      ? createdAtDate.toISOString()
-      : new Date().toISOString();
-
-  const tags = Array.isArray(event.tags)
-    ? event.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0)
-    : null;
-
-  return {
-    title: (event.title ?? "").trim(),
-    venue: event.venue?.trim() || null,
-    time_label: event.time_label?.trim() || null,
-    photo_url: event.photo_url?.trim() || null,
-    location: event.location?.trim() || null,
-    category: event.category?.trim() || null,
-    spontaneity_score:
-      typeof event.spontaneity_score === "number"
-        ? Math.max(0, Math.min(100, Math.round(event.spontaneity_score)))
-        : null,
-    crowd_label: event.crowd_label?.trim() || null,
-    tags: tags && tags.length > 0 ? tags : null,
-    description: event.description?.trim() || null,
-    source_url: event.source_url?.trim() || "",
-    created_at,
-  };
-}
-
-function isPostgrestKeyMismatchError(body: string): boolean {
-  const text = body.toLowerCase();
-  return text.includes("pgrst102") || text.includes("all object keys must match");
-}
-
-function isDuplicateViolation(body: string): boolean {
-  const text = body.toLowerCase();
-  return text.includes('"code":"23505"') || text.includes("duplicate key value violates unique constraint");
-}
-
-function getNullColumnFromError(body: string): string | null {
-  const match = body.match(/null value in column "([^"]+)"/i);
-  return match?.[1] ?? null;
-}
-
-function getMissingColumnFromError(body: string): string | null {
-  const quoted = body.match(/could not find the '([^']+)' column/i);
-  if (quoted?.[1]) return quoted[1];
-  const relation = body.match(/column "([^"]+)" of relation "events" does not exist/i);
-  return relation?.[1] ?? null;
-}
-
-function getColumnFromTypeError(body: string): string | null {
-  const match = body.match(/column "([^"]+)"/i);
-  return match?.[1] ?? null;
-}
-
-function getDefaultValueForColumn(column: string, row: SupabaseInsertRow): unknown {
-  const col = column.toLowerCase();
-  const now = new Date().toISOString();
-  const sourceUrl =
-    (typeof row.source_url === "string" && row.source_url.trim().length > 0
-      ? row.source_url
-      : typeof row.visit_more_url === "string" && row.visit_more_url.trim().length > 0
-        ? row.visit_more_url
-        : "https://example.com") as string;
-
-  if (col === "created_at" || col === "updated_at" || col.endsWith("_at")) return now;
-  if (col === "source_url") return sourceUrl;
-  if (col === "visit_more_url") return sourceUrl;
-  if (col === "title") return (typeof row.title === "string" && row.title.trim()) || "Untitled event";
-  if (col === "tags") return [];
-  if (col === "spontaneity_score") return 0;
-  if (col === "crowd_label") return "moderate";
-  return "";
-}
-
-function applySupabaseErrorFix(row: SupabaseInsertRow, body: string): boolean {
-  const text = body.toLowerCase();
-
-  const nullColumn = getNullColumnFromError(body);
-  if (nullColumn) {
-    row[nullColumn] = getDefaultValueForColumn(nullColumn, row);
-    return true;
-  }
-
-  const missingColumn = getMissingColumnFromError(body);
-  if (missingColumn && missingColumn in row) {
-    delete row[missingColumn];
-    return true;
-  }
-
-  if (
-    text.includes("invalid input syntax for type timestamp") ||
-    text.includes("invalid input syntax for type date")
-  ) {
-    const column = getColumnFromTypeError(body);
-    if (column) {
-      row[column] = new Date().toISOString();
-      return true;
-    }
-  }
-
-  if (text.includes("malformed array literal")) {
-    const column = getColumnFromTypeError(body);
-    if (column) {
-      row[column] = [];
-      return true;
-    }
-    if ("tags" in row) {
-      row.tags = [];
-      return true;
-    }
-  }
-
-  if (text.includes("invalid input value for enum")) {
-    const column = getColumnFromTypeError(body) ?? "crowd_label";
-    row[column] = getDefaultValueForColumn(column, row);
-    return true;
-  }
-
-  return false;
-}
-
-type EventPopulationPatch = {
-  event_index: number;
-  description?: string;
-  crowd_label?: string;
-  tags?: string[];
-  spontaneity_score?: number;
-};
-
-type CrawlResult = {
-  processed: number;
-  inserted: number;
-  events?: Omit<EventPin, "visit_more_url">[];
-};
-
-function extractJsonPayload(text: string): any | null {
-  const maybeJson = extractFirstJsonObject(text);
-  if (!maybeJson) return null;
-  try {
-    return JSON.parse(maybeJson);
-  } catch (err) {
-    console.error("[extractJsonPayload] Failed to parse extracted JSON object", {
-      extractedPreview: clipForLog(maybeJson),
-      err: String(err),
-    });
-    return null;
-  }
-}
-
-function resolveUrl(baseUrl: string, maybeUrl?: string): string {
-  const value = (maybeUrl ?? "").trim();
-  if (!value) return baseUrl;
-  try {
-    return new URL(value, baseUrl).toString();
-  } catch {
-    return baseUrl;
-  }
-}
-
-type PopulationSourceItem = {
-  event_index: number;
-  title: string;
-  venue: string;
-  time_label: string;
-  location: string;
-  category: string;
-  source_url: string;
-  source_content: string;
-};
-
-function applyPopulationSourceBudget(items: PopulationSourceItem[]): PopulationSourceItem[] {
-  if (!items.length) return items;
-
-  const perEventBudget = Math.max(
-    400,
-    Math.min(
-      MAX_SOURCE_CONTENT_CHARS_PER_EVENT,
-      Math.floor(MAX_POPULATION_SOURCE_CHARS_TOTAL / items.length),
-    ),
-  );
-
-  const budgeted = items.map((item) => ({
-    ...item,
-    source_content: item.source_content.slice(0, perEventBudget),
-  }));
-
-  console.log("[applyPopulationSourceBudget] Applied source budget", {
-    eventCount: items.length,
-    perEventBudget,
-    totalBudgetChars: MAX_POPULATION_SOURCE_CHARS_TOTAL,
-    totalAfterChars: budgeted.reduce((acc, item) => acc + item.source_content.length, 0),
-  });
-
-  return budgeted;
-}
-
-async function callGemini(cleanedHtml: string, apiKey: string): Promise<EventPin[]> {
-  if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY in environment");
-  }
-
-  const constrained = enforceHtmlTokenBudget(cleanedHtml);
-  console.log("[callGemini] HTML budget check", {
-    maxPromptTokens: MAX_PROMPT_TOKENS,
-    promptOverheadTokens: PROMPT_OVERHEAD_TOKENS,
-    maxHtmlChars: MAX_HTML_CHARS,
-    ...constrained,
-  });
-
-  const prompt = buildPrompt(constrained.html);
-  const promptChars = prompt.length;
-  const promptTokensEst = estimateTokensFromChars(promptChars);
-
-  console.log("[callGemini] Prompt ready", {
-    promptChars,
-    promptTokensEst,
-    maxPromptTokens: MAX_PROMPT_TOKENS,
-  });
-
-  if (promptTokensEst > MAX_PROMPT_TOKENS) {
-    throw new Error(
-      `Prompt token estimate exceeds max: ${promptTokensEst} > ${MAX_PROMPT_TOKENS}`,
-    );
-  }
-
-  const startedAt = Date.now();
-  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    }),
-  });
-  const durationMs = Date.now() - startedAt;
-
-  console.log("[callGemini] Gemini response status", { status: res.status, durationMs });
-
-  const responseText = await res.text();
-  console.log("[callGemini] Gemini raw response text", {
-    status: res.status,
-    durationMs,
-    bodyPreview: clipForLog(responseText),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Gemini request failed: ${res.status}`);
-  }
-
-  let data: any;
-  try {
-    data = JSON.parse(responseText);
-  } catch (err) {
-    console.error("[callGemini] Failed to parse Gemini JSON response", err);
-    throw new Error("Gemini returned non-JSON response");
-  }
-
-  const rawText = getGeminiText(data);
-  console.log("[callGemini] Gemini candidate text preview", {
-    textPreview: clipForLog(rawText),
-    textLength: rawText.length,
-  });
-
-  const parsed = extractJsonPayload(rawText);
-  if (!parsed) {
-    console.warn("[callGemini] No JSON object found in Gemini candidate text");
-    return [];
-  }
-
-  console.log("[callGemini] Final parsed JSON", {
-    jsonPreview: clipForLog(JSON.stringify(parsed)),
-  });
-
-  const events = coerceEvents(parsed);
-  console.log("[callGemini] Parsed events count:", events.length);
-  return events;
-}
-
-async function enrichEventsWithPopulationLayer(
-  events: EventPin[],
-  fallbackSourceUrl: string,
-  apiKey: string,
-): Promise<EventPin[]> {
-  if (!events.length) return events;
-  if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY in environment");
-  }
-
-  const sourcePayloadRaw = await Promise.all(
-    events.map(async (event, index) => {
-      const preferredUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
-      let sourceContent = "";
-
-      try {
-        const res = await fetch(preferredUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
-        if (res.ok) {
-          sourceContent = await sanitizeHTML(res);
-        } else {
-          console.warn("[enrichEventsWithPopulationLayer] Non-OK source content response", {
-            eventIndex: index,
-            status: res.status,
-            preferredUrl,
-          });
-        }
-      } catch (err) {
-        console.warn("[enrichEventsWithPopulationLayer] Failed to fetch source content", {
-          eventIndex: index,
-          preferredUrl,
-          err: String(err),
-        });
-      }
-
-      return {
-        event_index: index,
-        title: event.title,
-        venue: event.venue ?? "",
-        time_label: event.time_label ?? "",
-        location: event.location ?? "",
-        category: event.category ?? "",
-        source_url: preferredUrl,
-        source_content: compactWebText(sourceContent).slice(0, MAX_SOURCE_CONTENT_CHARS_PER_EVENT),
-      };
-    }),
-  );
-  let sourcePayload = applyPopulationSourceBudget(sourcePayloadRaw);
-
-  console.log("[enrichEventsWithPopulationLayer] Source payload built", {
-    eventCount: events.length,
-    payloadChars: JSON.stringify({ events: sourcePayload }).length,
-    sourceUrls: sourcePayload.map((item) => item.source_url),
-  });
-
-  let prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
-  let promptTokensEst = estimateTokensFromChars(prompt.length);
-
-  if (promptTokensEst > MAX_POPULATION_PROMPT_TOKENS) {
-    let perEventBudget = Math.max(200, Math.floor(MAX_SOURCE_CONTENT_CHARS_PER_EVENT / 2));
-    while (promptTokensEst > MAX_POPULATION_PROMPT_TOKENS && perEventBudget >= 200) {
-      sourcePayload = sourcePayload.map((item) => ({
-        ...item,
-        source_content: item.source_content.slice(0, perEventBudget),
-      }));
-      prompt = buildPopulationPrompt(JSON.stringify({ events: sourcePayload }));
-      promptTokensEst = estimateTokensFromChars(prompt.length);
-      perEventBudget = Math.floor(perEventBudget * 0.7);
-    }
-  }
-
-  console.log("[enrichEventsWithPopulationLayer] Enrichment prompt ready", {
-    promptChars: prompt.length,
-    promptTokensEst,
-    maxPopulationPromptTokens: MAX_POPULATION_PROMPT_TOKENS,
-  });
-
-  const startedAt = Date.now();
-  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    }),
-  });
-  const durationMs = Date.now() - startedAt;
-
-  console.log("[enrichEventsWithPopulationLayer] Gemini response status", {
-    status: res.status,
-    durationMs,
-  });
-
-  const responseText = await res.text();
-  console.log("[enrichEventsWithPopulationLayer] Gemini raw response", {
-    status: res.status,
-    durationMs,
-    bodyPreview: clipForLog(responseText),
-  });
-  if (!res.ok) {
-    throw new Error(`Gemini enrichment request failed: ${res.status} :: ${clipForLog(responseText, 1000)}`);
-  }
-
-  let data: any;
-  try {
-    data = JSON.parse(responseText);
-  } catch (err) {
-    console.error("[enrichEventsWithPopulationLayer] Failed to parse Gemini JSON response", err);
-    return events;
-  }
-
-  const rawText = getGeminiText(data);
-  console.log("[enrichEventsWithPopulationLayer] Gemini candidate text preview", {
-    textLength: rawText.length,
-    textPreview: clipForLog(rawText),
-  });
-  const parsed = extractJsonPayload(rawText);
-  const patchesRaw = Array.isArray(parsed?.events) ? parsed.events : [];
-  const patches: EventPopulationPatch[] = patchesRaw
-    .map((item: any) => ({
-      event_index: typeof item?.event_index === "number" ? item.event_index : -1,
-      description: typeof item?.description === "string" ? item.description : undefined,
-      crowd_label: typeof item?.crowd_label === "string" ? item.crowd_label : undefined,
-      tags: Array.isArray(item?.tags) ? item.tags.filter((x: any) => typeof x === "string") : undefined,
-      spontaneity_score: typeof item?.spontaneity_score === "number" ? item.spontaneity_score : undefined,
-    }))
-    .filter((patch) => patch.event_index >= 0 && patch.event_index < events.length);
-
-  console.log("[enrichEventsWithPopulationLayer] Parsed enrichment patches", {
-    patchesRawCount: patchesRaw.length,
-    validPatchesCount: patches.length,
-    patchesPreview: clipForLog(JSON.stringify(patches)),
-  });
-
-  if (!patches.length) {
-    console.warn("[enrichEventsWithPopulationLayer] No enrichment patches returned");
-    return events;
-  }
-
-  const patchByIndex = new Map<number, EventPopulationPatch>();
-  for (const patch of patches) patchByIndex.set(patch.event_index, patch);
-
-  const enriched = events.map((event, index) => {
-    const patch = patchByIndex.get(index);
-    const resolvedSourceUrl = resolveUrl(fallbackSourceUrl, event.visit_more_url || event.source_url);
-    if (!patch) return { ...event, source_url: resolvedSourceUrl };
-    return {
-      ...event,
-      source_url: resolvedSourceUrl,
-      description: patch.description ?? event.description,
-      crowd_label: patch.crowd_label ?? event.crowd_label,
-      tags: patch.tags ?? event.tags,
-      spontaneity_score: patch.spontaneity_score ?? event.spontaneity_score,
-    };
-  });
-
-  console.log("[enrichEventsWithPopulationLayer] Enrichment merge complete", {
-    totalEvents: enriched.length,
-    enrichedWithDescription: enriched.filter((e) => Boolean(e.description)).length,
-    enrichedWithCrowdLabel: enriched.filter((e) => Boolean(e.crowd_label)).length,
-    enrichedWithTags: enriched.filter((e) => Array.isArray(e.tags) && e.tags.length > 0).length,
-    enrichedWithSpontaneity: enriched.filter((e) => typeof e.spontaneity_score === "number").length,
-    enrichedPreview: clipForLog(JSON.stringify(enriched)),
-  });
-
-  return enriched;
-}
-
-async function insertEventsToSupabase(events: EventPin[], env: Env): Promise<void> {
-  if (!events.length) {
-    console.log("[insertEventsToSupabase] No events to insert");
-    return;
-  }
-
-  const supabaseToken = (env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY || "").trim();
-  const supabaseUrl = (env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
-  if (!supabaseToken) {
-    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY)");
-  }
-  if (!supabaseUrl) {
-    throw new Error("Missing SUPABASE_URL");
-  }
-
-  const sanitizedEvents = events
-    .map(normalizeEventForInsert)
-    .filter((event) => event.title.length > 0 && event.source_url.length > 0);
-
-  if (!sanitizedEvents.length) {
-    console.warn("[insertEventsToSupabase] All events were filtered out after sanitization");
-    return;
-  }
-
-  const dedupedEvents = Array.from(
-    new Map(sanitizedEvents.map((event) => [`${event.title}::${event.source_url}`, event])).values(),
-  );
-
-  console.log("[insertEventsToSupabase] Inserting events:", dedupedEvents.length);
-  const res = await fetch(`${supabaseUrl}/rest/v1/events`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: supabaseToken,
-      Authorization: `Bearer ${supabaseToken}`,
-      Prefer: "return=minimal,missing=default",
-    },
-    body: JSON.stringify(dedupedEvents),
-  });
-
-  console.log("[insertEventsToSupabase] Supabase response status:", res.status);
-  if (!res.ok) {
-    const body = await res.text();
-    const fallbackReason = isPostgrestKeyMismatchError(body)
-      ? "key-shape mismatch"
-      : "bulk insert error";
-    console.warn(`[insertEventsToSupabase] Bulk insert failed (${fallbackReason}), retrying row-by-row`, {
-      status: res.status,
-      bodyPreview: clipForLog(body, 1200),
-    });
-
-    const rowErrors: string[] = [];
-    let insertedCount = 0;
-
-    for (const event of dedupedEvents) {
-      const row: SupabaseInsertRow = { ...event };
-      let inserted = false;
-      let attempts = 0;
-
-      while (!inserted && attempts < 5) {
-        attempts += 1;
-        const rowRes = await fetch(`${supabaseUrl}/rest/v1/events`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: supabaseToken,
-            Authorization: `Bearer ${supabaseToken}`,
-            Prefer: "return=minimal,missing=default",
-          },
-          body: JSON.stringify(row),
-        });
-
-        if (rowRes.ok) {
-          inserted = true;
-          insertedCount += 1;
-          break;
-        }
-
-        const rowBody = await rowRes.text();
-        if (isDuplicateViolation(rowBody)) {
-          inserted = true;
-          console.log("[insertEventsToSupabase] Skipping duplicate event row", {
-            title: row.title,
-            source_url: row.source_url,
-          });
-          break;
-        }
-
-        const fixed = applySupabaseErrorFix(row, rowBody);
-        if (!fixed) {
-          rowErrors.push(
-            `${String(row.title ?? "unknown")} => attempt ${attempts} (${rowRes.status}) ${rowBody}`,
-          );
-          break;
-        }
-
-        console.warn("[insertEventsToSupabase] Retrying row after adaptive fix", {
-          title: row.title,
-          attempt: attempts,
-        });
-      }
-    }
-
-    console.log("[insertEventsToSupabase] Row-by-row insert summary", {
-      total: dedupedEvents.length,
-      inserted: insertedCount,
-      failed: rowErrors.length,
-      failedPreview: clipForLog(JSON.stringify(rowErrors), 2000),
-    });
-
-    if (rowErrors.length > 0) {
-      throw new Error(`Supabase row inserts failed for ${rowErrors.length} events`);
-    }
-  }
-}
-
-async function runCrawl(urls: string[], env: Env, includeEventsInResult = false): Promise<CrawlResult> {
-  let processed = 0;
-  let inserted = 0;
-  let eventsForResult: Omit<EventPin, "visit_more_url">[] | undefined = includeEventsInResult
-    ? []
-    : undefined;
-  console.log("[runCrawl] Starting crawl. URL count:", urls.length);
-
-  if (!urls.length) {
-    console.warn("[runCrawl] No URLs to process");
-    return { processed, inserted };
-  }
-
-  const randomIndex = Math.floor(Math.random() * urls.length);
-  const selectedUrl = urls[randomIndex];
-  console.log("[runCrawl] Randomly selected URL:", selectedUrl, "index:", randomIndex);
-
-  try {
-    console.log("[runCrawl] Fetching URL:", selectedUrl);
-    const source = await fetch(selectedUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
-    console.log("[runCrawl] Source status for", selectedUrl, ":", source.status);
-
-    if (!source.ok) {
-      console.warn("[runCrawl] Skipping URL due to non-OK response:", selectedUrl);
-      return { processed, inserted };
-    }
-
-    const cleaned = await sanitizeHTML(source);
-    console.log("[runCrawl] Cleaned HTML length for", selectedUrl, ":", cleaned.length);
-
-    const events = await callGemini(cleaned, env.GEMINI_API_KEY);
-    console.log("[runCrawl] Events extracted for", selectedUrl, ":", events.length);
-
-    const populatedEvents = await enrichEventsWithPopulationLayer(events, selectedUrl, env.GEMINI_API_KEY);
-    const eventsForInsert = populatedEvents.map(({ visit_more_url: _omit, ...event }) => event);
-    console.log("[runCrawl] Population layer complete", {
-      selectedUrl,
-      extractedCount: events.length,
-      enrichedCount: eventsForInsert.length,
-      enrichedPreview: clipForLog(JSON.stringify(eventsForInsert)),
-    });
-
-    await insertEventsToSupabase(eventsForInsert, env);
-
-    if (includeEventsInResult) {
-      eventsForResult = eventsForInsert;
-    }
-
-    processed = 1;
-    inserted = eventsForInsert.length;
-    console.log("[runCrawl] Completed URL:", selectedUrl, "processed:", processed, "inserted:", inserted);
-  } catch (err) {
-    console.error("[runCrawl] Error processing url:", selectedUrl, err);
-  }
-
-  console.log("[runCrawl] Finished crawl. Processed:", processed, "Inserted:", inserted);
-  return { processed, inserted, events: eventsForResult };
-}
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent";
+
+const MAX_EVENT_PAGES_PER_SOURCE = 3;
+const MAX_CANDIDATES_PER_SOURCE = 80;
+const USER_AGENT = "Mozilla/5.0 (compatible; EventCrawler/1.0)";
+
+// Rate-limit handling
+const CF_MAX_RETRIES = 5;
+const CF_BASE_BACKOFF_MS = 1200;
+const CF_MAX_BACKOFF_MS = 20000;
+
+// Concurrency controls
+const ROBOTS_CONCURRENCY = 4;
+const EVENT_PROCESS_CONCURRENCY = 2;
+
+// Cache robots result per host+path to avoid repeated fetch/parse
+const robotsCache = new Map<string, boolean>();
 
 function getConfiguredUrls(): string[] {
-  const rawUrls = Array.isArray((urlsConfig as any)?.urls) ? (urlsConfig as any).urls : [];
-  const urls = rawUrls
+  const raw = Array.isArray((urlsConfig as any)?.urls)
+    ? (urlsConfig as any).urls
+    : Array.isArray(urlsConfig)
+      ? (urlsConfig as any)
+      : [];
+
+  const urls = raw
     .filter((u: unknown) => typeof u === "string")
     .map((u: string) => u.trim())
     .filter((u: string) => u.length > 0);
 
-  console.log("[getConfiguredUrls] Loaded URLs count:", urls.length);
+  console.log("[getConfiguredUrls] Loaded URLs:", urls.length);
   return urls;
 }
 
-function isManualTriggerPath(pathname: string): boolean {
-  const segments = pathname.split("/").filter(Boolean);
-  const last = segments.length ? segments[segments.length - 1].toLowerCase() : "";
-  return last === "manual";
+function clip(s: string, n = 300): string {
+  return s.length <= n ? s : `${s.slice(0, n)}...`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRetryAfterMs(headers: Headers): number | null {
+  const retryAfter = headers.get("Retry-After");
+  if (!retryAfter) return null;
+
+  const seconds = Number(retryAfter);
+  if (!Number.isNaN(seconds) && seconds >= 0) return seconds * 1000;
+
+  const asDate = Date.parse(retryAfter);
+  if (!Number.isNaN(asDate)) {
+    const delta = asDate - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+
+  return null;
+}
+
+function computeBackoffMs(attempt: number): number {
+  const exp = Math.min(CF_BASE_BACKOFF_MS * 2 ** (attempt - 1), CF_MAX_BACKOFF_MS);
+  const jitter = Math.floor(Math.random() * 350);
+  return exp + jitter;
+}
+
+function readEnv(env: Env): ResolvedEnv {
+  const gemini = (env.GEMINI_API_KEY || "").trim();
+  const accountId = (env.CLOUDFLARE_ACCOUNT_ID || "").trim();
+  const cfToken = (env.CLOUDFLARE_API_TOKEN || "").trim();
+
+  console.log("[readEnv] Env status", {
+    gemini_api_key: gemini ? "set" : "missing",
+    cloudflare_account_id: accountId ? "set" : "missing",
+    cloudflare_api_token: cfToken ? "set" : "missing",
+  });
+
+  return { gemini, accountId, cfToken };
+}
+
+function validateEnvResolved(resolved: ResolvedEnv): void {
+  if (!resolved.gemini) throw new Error("Missing GEMINI_API_KEY");
+  if (!resolved.accountId) {
+    throw new Error(
+      "Missing CLOUDFLARE_ACCOUNT_ID. Set it in .dev.vars for local dev or wrangler secret for deployed env."
+    );
+  }
+  if (!resolved.cfToken) {
+    throw new Error(
+      "Missing CLOUDFLARE_API_TOKEN. Set it in .dev.vars for local dev or wrangler secret for deployed env."
+    );
+  }
+}
+
+async function fetchText(url: string): Promise<string> {
+  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+  if (!res.ok) throw new Error(`Failed fetch ${url} status=${res.status}`);
+  return res.text();
+}
+
+function normalizeUrl(base: string, href: string): string | null {
+  try {
+    const u = new URL(href, base);
+    if (!["http:", "https:"].includes(u.protocol)) return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isValidCandidateUrl(u: string): boolean {
+  const s = u.toLowerCase();
+  if (s.includes("%7b%7b") || s.includes("%7d%7d")) return false;
+  if (s.includes("{{") || s.includes("}}")) return false;
+  return true;
+}
+
+function extractLinksFromHtml(html: string, baseUrl: string): string[] {
+  const links = new Set<string>();
+  const re = /<a\s[^>]*href=["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const href = (m[1] || "").trim();
+    if (!href || href.startsWith("#") || href.toLowerCase().startsWith("javascript:")) continue;
+    const full = normalizeUrl(baseUrl, href);
+    if (full && isValidCandidateUrl(full)) links.add(full);
+  }
+  return Array.from(links);
+}
+
+function extractLinksFromSitemapXml(xml: string): string[] {
+  const links = new Set<string>();
+  const re = /<loc>(.*?)<\/loc>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    const u = (m[1] || "").trim();
+    if ((u.startsWith("http://") || u.startsWith("https://")) && isValidCandidateUrl(u)) {
+      links.add(u);
+    }
+  }
+  return Array.from(links);
+}
+
+function scoreEventLikeUrl(url: string, sourceHost: string): EventCandidate | null {
+  let score = 0;
+  const u = url.toLowerCase();
+
+  const positive = [
+    "event",
+    "events",
+    "whatson",
+    "what-s-on",
+    "whats-on",
+    "calendar",
+    "festival",
+    "gig",
+    "workshop",
+    "seminar",
+    "meetup",
+    "ticket",
+  ];
+  const negative = [
+    "login",
+    "signup",
+    "register",
+    "privacy",
+    "terms",
+    "contact",
+    "about",
+    "faq",
+    "help",
+    "account",
+    "cart",
+    "checkout",
+    "facebook.com",
+    "instagram.com",
+    "linkedin.com",
+    "twitter.com",
+    "youtube.com",
+  ];
+
+  for (const p of positive) if (u.includes(p)) score += 2;
+  for (const n of negative) if (u.includes(n)) score -= 3;
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === sourceHost) score += 2;
+    if (parsed.pathname.split("/").filter(Boolean).length >= 2) score += 1;
+  } catch {
+    return null;
+  }
+
+  if (score <= 0) return null;
+  return { url, score, reason: "keyword/url-heuristic" };
+}
+
+async function isAllowedByRobots(pageUrl: string): Promise<boolean> {
+  try {
+    const u = new URL(pageUrl);
+    const cacheKey = `${u.protocol}//${u.host}${u.pathname}`;
+    const cached = robotsCache.get(cacheKey);
+    if (typeof cached === "boolean") return cached;
+
+    const robotsUrl = `${u.protocol}//${u.host}/robots.txt`;
+    const robots = await fetch(robotsUrl, { headers: { "User-Agent": USER_AGENT } });
+    if (!robots.ok) {
+      robotsCache.set(cacheKey, true);
+      return true;
+    }
+
+    const txt = (await robots.text()).toLowerCase();
+    const path = u.pathname.toLowerCase();
+
+    let inStar = false;
+    const disallow: string[] = [];
+    for (const lineRaw of txt.split("\n")) {
+      const line = lineRaw.trim();
+      if (!line || line.startsWith("#")) continue;
+      if (line.startsWith("user-agent:")) {
+        const ua = line.split(":")[1]?.trim() || "";
+        inStar = ua === "*";
+        continue;
+      }
+      if (inStar && line.startsWith("disallow:")) {
+        const rule = (line.split(":")[1] || "").trim();
+        if (rule) disallow.push(rule);
+      }
+    }
+
+    for (const rule of disallow) {
+      if (rule === "/") {
+        robotsCache.set(cacheKey, false);
+        return false;
+      }
+      if (path.startsWith(rule.toLowerCase())) {
+        robotsCache.set(cacheKey, false);
+        return false;
+      }
+    }
+
+    robotsCache.set(cacheKey, true);
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let idx = 0;
+
+  async function run() {
+    while (idx < items.length) {
+      const current = idx++;
+      results[current] = await worker(items[current], current);
+    }
+  }
+
+  const runners = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    () => run()
+  );
+  await Promise.all(runners);
+  return results;
+}
+
+async function discoverEventPages(sourceUrl: string): Promise<string[]> {
+  console.log("[discoverEventPages] source:", sourceUrl);
+
+  const sourceHost = new URL(sourceUrl).hostname;
+  const listingHtml = await fetchText(sourceUrl);
+  const listingLinks = extractLinksFromHtml(listingHtml, sourceUrl);
+
+  const listingCandidates = Array.from(new Set(listingLinks))
+    .filter(isValidCandidateUrl)
+    .slice(0, MAX_CANDIDATES_PER_SOURCE);
+
+  let combined = listingCandidates;
+
+  // Skip sitemap fetch if we already have a strong pool
+  if (combined.length < Math.floor(MAX_CANDIDATES_PER_SOURCE * 0.75)) {
+    try {
+      const u = new URL(sourceUrl);
+      const sitemap = `${u.protocol}//${u.host}/sitemap.xml`;
+      const sitemapXml = await fetchText(sitemap);
+      const sitemapLinks = extractLinksFromSitemapXml(sitemapXml);
+      combined = Array.from(new Set([...combined, ...sitemapLinks]))
+        .filter(isValidCandidateUrl)
+        .slice(0, MAX_CANDIDATES_PER_SOURCE);
+    } catch (err) {
+      console.log("[discoverEventPages] sitemap unavailable:", String(err));
+    }
+  }
+
+  const scored = combined
+    .map((u) => scoreEventLikeUrl(u, sourceHost))
+    .filter((x): x is EventCandidate => Boolean(x))
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) return [];
+
+  // Check robots in parallel (limited), then keep top N in original ranking
+  const allowedFlags = await mapWithConcurrency(
+    scored,
+    ROBOTS_CONCURRENCY,
+    async (c) => isAllowedByRobots(c.url)
+  );
+
+  const picked: string[] = [];
+  for (let i = 0; i < scored.length; i++) {
+    if (picked.length >= MAX_EVENT_PAGES_PER_SOURCE) break;
+    if (!allowedFlags[i]) {
+      console.log("[discoverEventPages] robots denied:", scored[i].url);
+      continue;
+    }
+    picked.push(scored[i].url);
+  }
+
+  console.log("[discoverEventPages] selected:", picked);
+  return picked;
+}
+
+async function renderPdfViaCloudflare(pageUrl: string, resolved: ResolvedEnv): Promise<Uint8Array> {
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${resolved.accountId}/browser-rendering/pdf`;
+  console.log("[renderPdfViaCloudflare] endpoint:", endpoint);
+
+  let lastErr = "";
+  for (let attempt = 1; attempt <= CF_MAX_RETRIES; attempt++) {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resolved.cfToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url: pageUrl }),
+    });
+
+    if (res.ok) {
+      const ab = await res.arrayBuffer();
+      return new Uint8Array(ab);
+    }
+
+    const body = await res.text();
+    lastErr = `Cloudflare PDF failed ${res.status}: ${clip(body, 800)}`;
+
+    if (res.status !== 429 || attempt === CF_MAX_RETRIES) {
+      throw new Error(lastErr);
+    }
+
+    const retryAfterMs = getRetryAfterMs(res.headers);
+    const backoffMs = retryAfterMs ?? computeBackoffMs(attempt);
+    console.warn(
+      `[renderPdfViaCloudflare] rate limited (429). attempt=${attempt}/${CF_MAX_RETRIES} waiting=${backoffMs}ms url=${pageUrl}`
+    );
+    await sleep(backoffMs);
+  }
+
+  throw new Error(lastErr || "Cloudflare PDF failed after retries");
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const part = bytes.subarray(i, i + chunk);
+    binary += String.fromCharCode(...part);
+  }
+  return btoa(binary);
+}
+
+async function parseEventPdfWithGemini(
+  pdfBytes: Uint8Array,
+  sourceUrl: string,
+  resolved: ResolvedEnv
+): Promise<ParsedEvent> {
+  const inlineData = toBase64(pdfBytes);
+
+  const prompt =
+    'Extract event details from this PDF and return STRICT one-line JSON only with keys: ' +
+    '{"event_name":string|null,"description":string|null,"date":string|null,"time":string|null,"location":string|null,"source_url":string}. ' +
+    `Set source_url="${sourceUrl}". No markdown.`;
+
+  const res = await fetch(`${GEMINI_URL}?key=${resolved.gemini}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            {
+              inline_data: {
+                mime_type: "application/pdf",
+                data: inlineData,
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`Gemini failed ${res.status}: ${clip(txt, 800)}`);
+
+  const data = JSON.parse(txt);
+  const modelText: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const raw = modelText.trim();
+
+  let obj: any;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    const s = raw.indexOf("{");
+    const e = raw.lastIndexOf("}");
+    if (s >= 0 && e > s) obj = JSON.parse(raw.slice(s, e + 1));
+    else throw new Error(`Could not parse Gemini JSON object: ${clip(raw, 500)}`);
+  }
+
+  return {
+    event_name: typeof obj?.event_name === "string" ? obj.event_name : null,
+    description: typeof obj?.description === "string" ? obj.description : null,
+    date: typeof obj?.date === "string" ? obj.date : null,
+    time: typeof obj?.time === "string" ? obj.time : null,
+    location: typeof obj?.location === "string" ? obj.location : null,
+    source_url: sourceUrl,
+  };
+}
+
+async function processEventUrl(eventUrl: string, resolved: ResolvedEnv): Promise<ParsedEvent | null> {
+  try {
+    console.log("[processAllUrls] rendering PDF:", eventUrl);
+    const pdf = await renderPdfViaCloudflare(eventUrl, resolved);
+    console.log("[processAllUrls] pdf bytes:", pdf.length, "url:", eventUrl);
+
+    const parsed = await parseEventPdfWithGemini(pdf, eventUrl, resolved);
+    console.log("[processAllUrls] parsed event:", parsed);
+    return parsed;
+  } catch (err) {
+    console.error("[processAllUrls] failed event url:", eventUrl, String(err));
+    return null;
+  }
+}
+
+async function processAllUrls(env: Env): Promise<ParsedEvent[]> {
+  const resolved = readEnv(env);
+  validateEnvResolved(resolved);
+
+  const urls = getConfiguredUrls();
+  const allEvents: ParsedEvent[] = [];
+
+  for (const sourceUrl of urls) {
+    console.log("[processAllUrls] processing source:", sourceUrl);
+    try {
+      const eventPages = await discoverEventPages(sourceUrl);
+
+      const results = await mapWithConcurrency(
+        eventPages,
+        EVENT_PROCESS_CONCURRENCY,
+        async (eventUrl) => processEventUrl(eventUrl, resolved)
+      );
+
+      for (const r of results) {
+        if (r) allEvents.push(r);
+      }
+    } catch (err) {
+      console.error("[processAllUrls] failed source url:", sourceUrl, String(err));
+    }
+  }
+
+  return allEvents;
 }
 
 export default {
-  async scheduled(_event: any, env: Env, _ctx: any): Promise<void> {
-    console.log("[scheduled] Triggered");
-    const urls = getConfiguredUrls();
-    if (!urls.length) {
-      console.warn("[scheduled] No configured URLs");
-      return;
-    }
-    const result = await runCrawl(urls, env);
-    console.log("[scheduled] Done:", result);
-  },
-
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    console.log("[fetch] Incoming request", { method: request.method, path: url.pathname });
 
-    if (request.method === "GET" && isManualTriggerPath(url.pathname)) {
-      console.log("[manual] Trigger received:", url.pathname);
-      const urls = getConfiguredUrls();
-      console.log("[manual] URLs resolved:", urls);
-
-      if (!urls.length) {
-        console.warn("[manual] No URLs configured in urls.json");
-        return Response.json({ ok: false, error: "No URLs configured in urls.json." }, { status: 400 });
-      }
-
+    if (request.method === "GET" && url.pathname.endsWith("/manual2")) {
       try {
-        console.log("[manual] Starting crawl");
-        const result = await runCrawl(urls, env, true);
-        console.log("[manual] Crawl finished:", result);
-        return Response.json({
-          ok: true,
-          processed: result.processed,
-          inserted: result.inserted,
-          events: result.events ?? [],
-        });
+        const events = await processAllUrls(env);
+        return Response.json({ ok: true, count: events.length, events });
       } catch (err) {
-        console.error("[manual] Crawl failed:", err);
-        return Response.json(
-          { ok: false, error: "Manual crawl failed", details: String(err) },
-          { status: 500 },
-        );
+        return Response.json({ ok: false, error: String(err) }, { status: 500 });
       }
     }
 
     if (request.method === "GET") {
-      return Response.json({ ok: true, message: "Worker is running" });
+      return Response.json({ ok: true, message: "Worker running. Use /manual2" });
     }
 
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
+    return new Response("Method Not Allowed", { status: 405 });
+  },
+
+  async scheduled(_event: any, env: Env): Promise<void> {
+    try {
+      const events = await processAllUrls(env);
+      console.log("[scheduled] done. events:", events.length);
+    } catch (err) {
+      console.error("[scheduled] failed:", String(err));
     }
-
-    const payload = (await request.json().catch(() => ({}))) as { urls?: string[] };
-    const urls = Array.isArray(payload.urls) ? payload.urls : getConfiguredUrls();
-
-    if (!urls.length) {
-      return Response.json(
-        { ok: false, error: "No urls provided. Send { urls: string[] } or configure urls.json." },
-        { status: 400 },
-      );
-    }
-
-    const result = await runCrawl(urls, env);
-    return Response.json({ ok: true, ...result });
   },
 };
+
