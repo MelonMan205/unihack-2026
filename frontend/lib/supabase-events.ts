@@ -15,6 +15,10 @@ type SupabaseEventRow = {
   crowd_label: string | null;
   tags: string[] | null;
   created_at: string;
+  event_crowd_forecasts?: {
+    forecast_label: string;
+    confidence: number;
+  } | null;
 };
 
 const EVENT_PHOTO_FALLBACK =
@@ -55,6 +59,19 @@ function normalizeCrowdLabel(value: string | null): EventPin["crowdLabel"] {
       return "Packed";
     default:
       return "Good vibe";
+  }
+}
+
+function normalizeForecastLabel(value: string | null | undefined): EventPin["crowdLabel"] | null {
+  switch (value) {
+    case "low":
+      return "Low-key";
+    case "medium":
+      return "Good vibe";
+    case "high":
+      return "Packed";
+    default:
+      return null;
   }
 }
 
@@ -135,6 +152,7 @@ function fallbackLocation(index: number): [number, number] {
 }
 
 function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
+  const forecastLabel = normalizeForecastLabel(row.event_crowd_forecasts?.forecast_label);
   return {
     id: row.id,
     title: row.title,
@@ -146,7 +164,7 @@ function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
     location: parseLocation(row.location) ?? fallbackLocation(index),
     category: normalizeCategory(row.category),
     spontaneityScore: row.spontaneity_score ?? 70,
-    crowdLabel: normalizeCrowdLabel(row.crowd_label),
+    crowdLabel: forecastLabel ?? normalizeCrowdLabel(row.crowd_label),
     tags: row.tags?.filter(Boolean) ?? [],
   };
 }
@@ -155,7 +173,7 @@ export async function fetchEventsFromSupabase(client: SupabaseClient): Promise<E
   const { data, error } = await client
     .from("events")
     .select(
-      "id,title,venue,time_label,description,source_url,photo_url,location,category,spontaneity_score,crowd_label,tags,created_at",
+      "id,title,venue,time_label,description,source_url,photo_url,location,category,spontaneity_score,crowd_label,tags,created_at,event_crowd_forecasts(forecast_label,confidence)",
     )
     .order("created_at", { ascending: false })
     .limit(200)

@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
+import Link from "next/link";
 import {
   type CSSProperties,
   type ReactNode,
@@ -34,7 +35,7 @@ import {
 } from "@/components/ui/sheet";
 import { fetchEventsFromSupabase } from "@/lib/supabase-events";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
-import { DEFAULT_LOCATION, MOCK_EVENTS, type Category, type EventPin } from "@/mock/events";
+import { DEFAULT_LOCATION, type Category, type EventPin } from "@/mock/events";
 import { distanceInKm } from "@/utils/geo";
 
 const MapView = dynamic(() => import("@/components/MapView").then((mod) => mod.MapView), {
@@ -69,7 +70,7 @@ const categoryIcons: Record<Category, ReactNode> = {
 };
 
 function mergeLiveAndMockEvents(liveEvents: EventPin[]): EventPin[] {
-  const allEvents = [...liveEvents, ...MOCK_EVENTS];
+  const allEvents = [...liveEvents];
   const seen = new Set<string>();
 
   return allEvents.filter((event) => {
@@ -190,7 +191,11 @@ export default function HomePage() {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("tonight");
   const [openDiscoverControl, setOpenDiscoverControl] = useState<"radius" | "time" | null>(null);
   const [locationMode, setLocationMode] = useState<"current" | "pick">("current");
-  const [events, setEvents] = useState<EventPin[]>(MOCK_EVENTS);
+  const [events, setEvents] = useState<EventPin[]>([]);
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [attendanceByEventId, setAttendanceByEventId] = useState<Record<string, string>>({});
+  const [attendanceVisibilityByEventId, setAttendanceVisibilityByEventId] = useState<Record<string, string>>({});
+  const [savedEventIds, setSavedEventIds] = useState<Set<string>>(new Set());
   const [userLocation, setUserLocation] = useState<[number, number]>(DEFAULT_LOCATION);
   const [locationLabel, setLocationLabel] = useState("locating you...");
   const [isLocationReady, setIsLocationReady] = useState(false);
@@ -239,6 +244,15 @@ export default function HomePage() {
     } catch {
       // Ignore invalid cache payloads.
     }
+  }, []);
+
+  useEffect(() => {
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+
+    client.auth.getUser().then(({ data }) => {
+      setAuthUserId(data.user?.id ?? null);
+    });
   }, []);
 
   useEffect(() => {
@@ -301,6 +315,132 @@ export default function HomePage() {
       window.removeEventListener("focus", onFocus);
     };
   }, []);
+
+  useEffect(() => {
+    const client = getSupabaseBrowserClient();
+    if (!client || !authUserId) {
+      return;
+    }
+
+    client
+      .from("event_attendance")
+      .select("event_id,status,visibility")
+      .eq("user_id", authUserId)
+      .then(({ data }) => {
+        const nextStatuses: Record<string, string> = {};
+        const nextVisibility: Record<string, string> = {};
+        for (const row of data ?? []) {
+          nextStatuses[row.event_id] = row.status;
+          nextVisibility[row.event_id] = row.visibility;
+        }
+        setAttendanceByEventId(nextStatuses);
+        setAttendanceVisibilityByEventId(nextVisibility);
+      });
+
+    client
+      .from("saved_event_items")
+      .select("event_id")
+      .eq("user_id", authUserId)
+      .then(({ data }) => {
+        setSavedEventIds(new Set((data ?? []).map((row) => row.event_id)));
+      });
+  }, [authUserId]);
+
+  const setAttendance = async (
+    eventId: string,
+    status: "interested" | "going" | "not_going" | "checked_in",
+    visibility: "public" | "friends" | "close_friends" | "only_me" | "ghost" = "friends",
+  ) => {
+    const client = getSupabaseBrowserClient();
+    if (!client || !authUserId) {
+      alert("Please sign in first.");
+      return;
+    }
+    const { error } = await client.rpc("app_set_attendance", {
+      event_uuid: eventId,
+      attendance_status: status,
+      visibility_mode: visibility,
+    });
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    setAttendanceByEventId((current) => ({ ...current, [eventId]: status }));
+    setAttendanceVisibilityByEventId((current) => ({ ...current, [eventId]: visibility }));
+  };
+
+  const toggleSave = async (eventId: string) => {
+    const client = getSupabaseBrowserClient();
+    if (!client || !authUserId) {
+      alert("Please sign in first.");
+      return;
+    }
+
+    const { data: collections } = await client
+      .from("saved_event_collections")
+      .select("id")
+      .eq("user_id", authUserId)
+      .eq("is_default", true)
+      .limit(1);
+
+    let collectionId = collections?.[0]?.id;
+    if (!collectionId) {
+      const { data: created, error: createError } = await client
+        .from("saved_event_collections")
+        .insert({ user_id: authUserId, name: "Saved Events", is_default: true })
+        .select("id")
+        .single();
+      if (createError || !created) {
+        alert(createError?.message ?? "Failed to create default collection.");
+        return;
+      }
+      collectionId = created.id;
+    }
+
+    if (savedEventIds.has(eventId)) {
+      const { error } = await client
+        .from("saved_event_items")
+        .delete()
+        .eq("user_id", authUserId)
+        .eq("event_id", eventId)
+        .eq("collection_id", collectionId);
+      if (error) {
+        alert(error.message);
+        return;
+      }
+      setSavedEventIds((current) => {
+        const next = new Set(current);
+        next.delete(eventId);
+        return next;
+      });
+      return;
+    }
+
+    const { error } = await client.from("saved_event_items").insert({
+      user_id: authUserId,
+      event_id: eventId,
+      collection_id: collectionId,
+    });
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    setSavedEventIds((current) => new Set(current).add(eventId));
+  };
+
+  const checkInToEvent = async (eventId: string) => {
+    const client = getSupabaseBrowserClient();
+    if (!client || !authUserId) {
+      alert("Please sign in first.");
+      return;
+    }
+    const { error } = await client.rpc("app_check_in", { event_uuid: eventId, ttl_minutes: 240 });
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    setAttendanceByEventId((current) => ({ ...current, [eventId]: "checked_in" }));
+  };
 
   const categoryFilteredEvents = useMemo(
     () =>
@@ -533,9 +673,25 @@ export default function HomePage() {
                     className="h-11 w-full rounded-[14px] border border-zinc-300/70 bg-white/82 pl-9 pr-3 text-sm text-zinc-800 outline-none placeholder:text-zinc-500 focus:border-zinc-400"
                   />
                 </div>
-                <Button className="icon-filter-btn h-11 w-full rounded-[14px] sm:w-auto sm:px-6">
-                  go on a side quest
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  {authUserId ? (
+                    <>
+                      <Link href="/profile/settings" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                        profile
+                      </Link>
+                      <Link href="/friends" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                        friends
+                      </Link>
+                      <Link href="/saved" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                        saved
+                      </Link>
+                    </>
+                  ) : (
+                    <Link href="/auth" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                      sign in
+                    </Link>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -590,9 +746,66 @@ export default function HomePage() {
                 ))}
               </div>
 
-              <Button className="mt-6 h-11 w-full bg-yellow-400 text-zinc-900 hover:bg-yellow-300">
-                Go now
-              </Button>
+              <div className="mt-6 grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  onClick={() => void setAttendance(selectedEvent.id, "interested", "friends")}
+                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                >
+                  Interested
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void setAttendance(selectedEvent.id, "going", "friends")}
+                  className="h-10 bg-yellow-400 text-zinc-900 hover:bg-yellow-300"
+                >
+                  Going
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void setAttendance(selectedEvent.id, "not_going", "only_me")}
+                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                >
+                  Not Going
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void setAttendance(selectedEvent.id, "going", "ghost")}
+                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                >
+                  Ghost Mode
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void checkInToEvent(selectedEvent.id)}
+                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                >
+                  Check in
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void toggleSave(selectedEvent.id)}
+                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                >
+                  {savedEventIds.has(selectedEvent.id) ? "Unsave" : "Save"}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    if (selectedEvent.sourceUrl) {
+                      void navigator.clipboard.writeText(selectedEvent.sourceUrl);
+                      alert("Event link copied.");
+                    }
+                  }}
+                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                >
+                  Share link
+                </Button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600">
+                <span>Status: {attendanceByEventId[selectedEvent.id] ?? "none"}</span>
+                <span>Visibility: {attendanceVisibilityByEventId[selectedEvent.id] ?? "friends"}</span>
+              </div>
             </>
           ) : null}
         </SheetContent>

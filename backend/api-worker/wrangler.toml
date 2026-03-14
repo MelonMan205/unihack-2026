@@ -1,0 +1,15 @@
+name = "happs-api"
+main = "index.ts"
+compatibility_date = "2026-03-14"
+workers_dev = false
+routes = [{ pattern = "api.happs.dev/*", zone_name = "happs.dev" }]
+
+[vars]
+SUPABASE_URL = ""
+SUPABASE_PUBLISHABLE_KEY = ""
+RATE_LIMIT_PER_MINUTE = "80"
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true

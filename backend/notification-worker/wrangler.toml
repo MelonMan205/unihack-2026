@@ -1,0 +1,15 @@
+name = "unihack-2026-notifications"
+main = "index.ts"
+compatibility_date = "2026-03-14"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+SUPABASE_URL = ""
+PUSH_WEBHOOK_URL = ""
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
