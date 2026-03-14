@@ -39,8 +39,8 @@ function FriendsInner() {
 
   useEffect(() => {
     if (!client) return;
-    client.auth.getUser().then(({ data }) => {
-      const currentUserId = data.user?.id || "";
+    client.auth.getSession().then(({ data }) => {
+      const currentUserId = data.session?.user?.id || "";
       setUserId(currentUserId);
       if (currentUserId) {
         void loadFriendships(currentUserId);
@@ -50,8 +50,9 @@ function FriendsInner() {
 
   useEffect(() => {
     if (!client) return;
-    const query = searchQuery.trim();
-    if (query.length < 2) {
+    const query = searchQuery.trim().toLowerCase();
+    const safeQuery = query.replace(/[%_\\]/g, "");
+    if (safeQuery.length < 3) {
       setSearchResults([]);
       return;
     }
@@ -59,15 +60,16 @@ function FriendsInner() {
     let isCancelled = false;
     setIsSearching(true);
     const timeoutId = window.setTimeout(() => {
-      Promise.all([
-        client.from("profiles").select("id,username,display_name").ilike("username", `%${query}%`).limit(8),
-        client.from("profiles").select("id,username,display_name").ilike("display_name", `%${query}%`).limit(8),
-      ]).then(([usernameMatch, nameMatch]) => {
+      client
+        .rpc("app_search_profiles", {
+          search_text: safeQuery,
+          max_results: 8,
+        })
+        .then(({ data, error: searchError }) => {
         if (isCancelled) {
           return;
         }
 
-        const searchError = usernameMatch.error ?? nameMatch.error;
         if (searchError) {
           setError(searchError.message);
           setSearchResults([]);
@@ -75,7 +77,7 @@ function FriendsInner() {
           return;
         }
 
-        const merged = [...(usernameMatch.data ?? []), ...(nameMatch.data ?? [])] as ProfileSearchResult[];
+        const merged = (data ?? []) as ProfileSearchResult[];
         const unique = new Map<string, ProfileSearchResult>();
         for (const profile of merged) {
           if (profile.id !== userId) {
@@ -86,7 +88,7 @@ function FriendsInner() {
         setSearchResults(Array.from(unique.values()).slice(0, 8));
         setIsSearching(false);
       });
-    }, 250);
+    }, 450);
 
     return () => {
       isCancelled = true;
@@ -140,12 +142,13 @@ function FriendsInner() {
           <input
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search by name or username"
+            placeholder="Search by username"
             className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2"
           />
+          <p className="mt-1 text-[11px] text-zinc-500">Type at least 3 characters. Prefix search only.</p>
           <div className="mt-2 space-y-2">
             {isSearching ? <p className="text-xs text-zinc-500">Searching...</p> : null}
-            {!isSearching && searchQuery.trim().length >= 2 && searchResults.length === 0 ? (
+            {!isSearching && searchQuery.trim().length >= 3 && searchResults.length === 0 ? (
               <p className="text-xs text-zinc-500">No matching users found.</p>
             ) : null}
             {searchResults.map((profile) => (

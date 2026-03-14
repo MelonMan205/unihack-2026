@@ -23,8 +23,8 @@ function SavedInner() {
 
   useEffect(() => {
     if (!client) return;
-    client.auth.getUser().then(async ({ data }) => {
-      const userId = data.user?.id;
+    client.auth.getSession().then(async ({ data }) => {
+      const userId = data.session?.user?.id;
       if (!userId) return;
       const { data: savedData } = await client
         .from("saved_event_items")

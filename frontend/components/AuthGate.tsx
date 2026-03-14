@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import type { User } from "@supabase/supabase-js";
+import type { Session, User } from "@supabase/supabase-js";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 type AuthGateProps = {
@@ -23,34 +23,60 @@ export function AuthGate({ children, requireOnboarding = true }: AuthGateProps) 
       return;
     }
 
-    client.auth
-      .getUser()
-      .then(async ({ data }) => {
-        const nextUser = data.user ?? null;
-        setUser(nextUser);
-        if (!nextUser) {
-          router.replace(`/auth?next=${encodeURIComponent(pathname || "/")}`);
+    let isDisposed = false;
+    const validateSession = async (session: Session | null) => {
+      if (isDisposed) {
+        return;
+      }
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+      if (!nextUser) {
+        setState("loading");
+        router.replace(`/auth?next=${encodeURIComponent(pathname || "/")}`);
+        return;
+      }
+
+      if (requireOnboarding) {
+        const { data: profile, error } = await client
+          .from("profiles")
+          .select("onboarding_completed")
+          .eq("id", nextUser.id)
+          .maybeSingle();
+
+        if (isDisposed) {
           return;
         }
-
-        if (requireOnboarding) {
-          const { data: profile } = await client
-            .from("profiles")
-            .select("onboarding_completed")
-            .eq("id", nextUser.id)
-            .maybeSingle();
-
-          if (!profile?.onboarding_completed) {
-            router.replace("/onboarding");
-            return;
-          }
+        if (error) {
+          // Avoid trapping users in a permanent loading state if profile lookup fails.
+          setState("ready");
+          return;
         }
+        if (!profile?.onboarding_completed) {
+          router.replace("/onboarding");
+          return;
+        }
+      }
 
-        setState("ready");
-      })
+      setState("ready");
+    };
+
+    client.auth
+      .getSession()
+      .then(({ data }) => validateSession(data.session))
       .catch(() => {
         router.replace("/auth");
       });
+
+    const {
+      data: { subscription },
+    } = client.auth.onAuthStateChange((_event, session) => {
+      void validateSession(session);
+    });
+
+    return () => {
+      isDisposed = true;
+      subscription.unsubscribe();
+    };
   }, [pathname, requireOnboarding, router]);
 
   if (state === "loading") {

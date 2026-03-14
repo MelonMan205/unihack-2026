@@ -39,8 +39,8 @@ function NotificationsInner() {
 
   useEffect(() => {
     if (!client) return;
-    client.auth.getUser().then(async ({ data }) => {
-      const currentUserId = data.user?.id ?? null;
+    client.auth.getSession().then(async ({ data }) => {
+      const currentUserId = data.session?.user?.id ?? null;
       setUserId(currentUserId);
       if (currentUserId) {
         void loadRows(currentUserId);
