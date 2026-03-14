@@ -6,6 +6,8 @@ type SupabaseEventRow = {
   title: string;
   venue: string | null;
   time_label: string | null;
+  description: string | null;
+  source_url: string | null;
   photo_url: string | null;
   location: string | null;
   category: string | null;
@@ -138,6 +140,8 @@ function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
     title: row.title,
     venue: row.venue ?? "Venue TBA",
     timeLabel: row.time_label ?? "Happening soon",
+    description: row.description ?? "",
+    sourceUrl: row.source_url ?? undefined,
     photoUrl: row.photo_url ?? EVENT_PHOTO_FALLBACK,
     location: parseLocation(row.location) ?? fallbackLocation(index),
     category: normalizeCategory(row.category),
@@ -151,7 +155,7 @@ export async function fetchEventsFromSupabase(client: SupabaseClient): Promise<E
   const { data, error } = await client
     .from("events")
     .select(
-      "id,title,venue,time_label,photo_url,location,category,spontaneity_score,crowd_label,tags,created_at",
+      "id,title,venue,time_label,description,source_url,photo_url,location,category,spontaneity_score,crowd_label,tags,created_at",
     )
     .order("created_at", { ascending: false })
     .limit(200)
