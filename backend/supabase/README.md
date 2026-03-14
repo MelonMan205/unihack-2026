@@ -17,6 +17,15 @@ This folder contains the Supabase schema required for Happs, aligned with the cu
 - `migrations/004_waitlist_signups.sql`
   - Creates `public.waitlist_signups` for landing-page waitlist captures.
   - Intended for service-role inserts from `backend/waitlist-worker`.
+- `migrations/005_users_spec_foundation.sql`
+  - Adds production social/privacy/moderation/notifications schema (`friendships`, `event_attendance`, `event_checkins`, `notifications`, `user_roles`, etc).
+  - Adds analytics views and organizer metrics view.
+- `migrations/006_users_spec_security_rpc.sql`
+  - Adds strict RLS, helper functions, and RPC workflows (friend request lifecycle, attendance updates, check-ins, organizer approvals).
+  - Hardens event write policies to organizer/admin roles only.
+- `migrations/007_notification_and_forecast_jobs.sql`
+  - Adds scheduler RPC jobs for event reminder queueing and crowd forecast refresh.
+  - Adds optional `events.start_at/end_at` for time-based reminders.
 
 ## Apply migrations
 
@@ -32,6 +41,9 @@ If you prefer SQL Editor, run migration files in order:
 2. `002_profiles_and_auth_trigger.sql`
 3. `003_social_tables.sql`
 4. `004_waitlist_signups.sql`
+5. `005_users_spec_foundation.sql`
+6. `006_users_spec_security_rpc.sql`
+7. `007_notification_and_forecast_jobs.sql`
 
 ## Worker integration (unchanged)
 
