@@ -331,7 +331,7 @@ export default function HomePage() {
       <Sheet open={Boolean(selectedEvent)} onOpenChange={(open) => !open && setSelectedEvent(null)}>
         <SheetContent
           side="bottom"
-          className="mx-auto z-[1400] max-h-[85dvh] max-w-3xl overflow-y-auto rounded-t-[22px] border border-white/85 bg-white/88 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-5 shadow-[0_30px_80px_rgba(15,23,42,0.35)] backdrop-blur-3xl sm:px-5"
+          className="mx-auto z-[1400] max-h-[85dvh] max-w-3xl overflow-y-auto rounded-t-[22px] border border-white/85 bg-white/88 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-12 shadow-[0_30px_80px_rgba(15,23,42,0.35)] backdrop-blur-3xl sm:px-5"
         >
           {selectedEvent ? (
             <>
