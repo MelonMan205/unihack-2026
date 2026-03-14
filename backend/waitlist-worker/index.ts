@@ -56,13 +56,64 @@ const PAGE_HTML = `<!doctype html>
           Arial,
           sans-serif;
         color: var(--text);
+        background: var(--bg);
+        overflow-x: hidden;
+      }
+
+      .map-backdrop {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
         background:
-          radial-gradient(circle at 10% 10%, rgba(250, 204, 21, 0.20), transparent 40%),
-          radial-gradient(circle at 90% 20%, rgba(59, 130, 246, 0.12), transparent 35%),
-          var(--bg);
+          linear-gradient(115deg, rgba(238, 241, 245, 0.36), rgba(238, 241, 245, 0.1)),
+          radial-gradient(circle at 22% 35%, rgba(250, 204, 21, 0.16), transparent 34%),
+          radial-gradient(circle at 78% 22%, rgba(59, 130, 246, 0.12), transparent 30%),
+          url("https://staticmap.openstreetmap.de/staticmap.php?center=-37.8136,144.9631&zoom=11&size=1800x1200&maptype=mapnik");
+        background-size: cover;
+        background-position: center;
+        filter: blur(2.5px) saturate(1.04) contrast(1);
+        transform: scale(1.01);
+        opacity: 0.98;
+        animation: mapIn 650ms ease-out both;
+      }
+
+      .map-backdrop::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          repeating-linear-gradient(
+            24deg,
+            rgba(255, 255, 255, 0.1) 0px,
+            rgba(255, 255, 255, 0.1) 2px,
+            transparent 2px,
+            transparent 42px
+          ),
+          repeating-linear-gradient(
+            -34deg,
+            rgba(15, 23, 42, 0.06) 0px,
+            rgba(15, 23, 42, 0.06) 1px,
+            transparent 1px,
+            transparent 38px
+          );
+        mix-blend-mode: soft-light;
+      }
+
+      .map-backdrop::before {
+        content: "";
+        position: absolute;
+        width: 380px;
+        height: 380px;
+        right: -100px;
+        top: -120px;
+        border-radius: 999px;
+        background: rgba(250, 204, 21, 0.2);
+        filter: blur(40px);
       }
 
       .shell {
+        position: relative;
+        z-index: 1;
         min-height: 100dvh;
         display: grid;
         place-items: center;
@@ -79,6 +130,7 @@ const PAGE_HTML = `<!doctype html>
           inset 0 1px 0 rgba(255, 255, 255, 0.6);
         backdrop-filter: blur(18px) saturate(1.1);
         padding: 20px;
+        animation: panelIn 500ms cubic-bezier(0.2, 0.7, 0.2, 1) 70ms both;
       }
 
       @media (min-width: 640px) {
@@ -192,9 +244,39 @@ const PAGE_HTML = `<!doctype html>
       .status.ok {
         color: #166534;
       }
+
+      @keyframes mapIn {
+        from {
+          opacity: 0;
+          transform: scale(1.025);
+        }
+        to {
+          opacity: 0.98;
+          transform: scale(1.01);
+        }
+      }
+
+      @keyframes panelIn {
+        from {
+          opacity: 0;
+          transform: translateY(14px) scale(0.992);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .map-backdrop,
+        .panel {
+          animation: none;
+        }
+      }
     </style>
   </head>
   <body>
+    <div class="map-backdrop" aria-hidden="true"></div>
     <main class="shell">
       <section class="panel">
         <p class="eyebrow">Tonight nearby</p>
