@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { AuthGate } from "@/components/AuthGate";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { isAdminUser } from "@/lib/roles";
@@ -119,7 +120,12 @@ function AdminInner() {
     return (
       <main className="mx-auto min-h-screen w-full max-w-3xl p-4">
         <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-          <h1 className="text-2xl font-bold text-zinc-900">Admin</h1>
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-2xl font-bold text-zinc-900">Admin</h1>
+            <Link href="/" className="text-sm text-zinc-700 underline">
+              Back to map
+            </Link>
+          </div>
           <p className="mt-2 text-sm text-zinc-600">You do not have admin access.</p>
         </div>
       </main>
@@ -129,7 +135,12 @@ function AdminInner() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-5xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-        <h1 className="text-2xl font-bold text-zinc-900">Admin Moderation</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-zinc-900">Admin Moderation</h1>
+          <Link href="/" className="text-sm text-zinc-700 underline">
+            Back to map
+          </Link>
+        </div>
         {message ? <p className="mt-2 text-sm text-zinc-700">{message}</p> : null}
 
         <section className="mt-5">

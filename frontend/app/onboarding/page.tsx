@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
 import {
@@ -140,7 +141,12 @@ function OnboardingInner() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-4 py-8">
       <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <h1 className="text-2xl font-bold text-zinc-900">Set up your profile</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-zinc-900">Set up your profile</h1>
+          <Link href="/" className="text-sm text-zinc-700 underline">
+            Back to map
+          </Link>
+        </div>
         <p className="mt-1 text-sm text-zinc-600">Choose a username and at least 3 interests.</p>
 
         <label className="mt-4 block text-sm text-zinc-700">

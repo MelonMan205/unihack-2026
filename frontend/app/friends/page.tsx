@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { AuthGate } from "@/components/AuthGate";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
@@ -17,12 +18,18 @@ type ProfileSearchResult = {
   display_name: string | null;
 };
 
+type ProfilePreview = {
+  username: string | null;
+  display_name: string | null;
+};
+
 function FriendsInner() {
   const client = getSupabaseBrowserClient();
   const [userId, setUserId] = useState<string>("");
   const [friendships, setFriendships] = useState<Friendship[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<ProfileSearchResult[]>([]);
+  const [profilesById, setProfilesById] = useState<Record<string, ProfilePreview>>({});
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -47,6 +54,40 @@ function FriendsInner() {
       }
     });
   }, [client, loadFriendships]);
+
+  useEffect(() => {
+    if (!client || !userId || friendships.length === 0) {
+      return;
+    }
+
+    const otherUserIds = Array.from(
+      new Set(
+        friendships
+          .map((friendship) =>
+            friendship.requester_id === userId ? friendship.addressee_id : friendship.requester_id,
+          )
+          .filter(Boolean),
+      ),
+    );
+    if (otherUserIds.length === 0) {
+      return;
+    }
+
+    client
+      .from("profiles")
+      .select("id,username,display_name")
+      .in("id", otherUserIds)
+      .then(({ data }) => {
+        const nextProfiles: Record<string, ProfilePreview> = {};
+        for (const profile of (data as ProfileSearchResult[] | null) ?? []) {
+          nextProfiles[profile.id] = {
+            username: profile.username ?? null,
+            display_name: profile.display_name ?? null,
+          };
+        }
+        setProfilesById(nextProfiles);
+      });
+  }, [client, friendships, userId]);
 
   useEffect(() => {
     if (!client) return;
@@ -134,7 +175,12 @@ function FriendsInner() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-3xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-        <h1 className="text-2xl font-bold text-zinc-900">Friends</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-zinc-900">Friends</h1>
+          <Link href="/" className="text-sm text-zinc-700 underline">
+            Back to map
+          </Link>
+        </div>
         <p className="mt-1 text-sm text-zinc-600">Send requests, accept invites, and manage your social network.</p>
 
         <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3">
@@ -177,9 +223,14 @@ function FriendsInner() {
           {friendships.map((friendship) => {
             const isIncoming = friendship.addressee_id === userId && friendship.status === "pending";
             const otherUserId = friendship.requester_id === userId ? friendship.addressee_id : friendship.requester_id;
+            const otherProfile = profilesById[otherUserId];
+            const preferredName =
+              otherProfile?.display_name?.trim() || otherProfile?.username?.trim() || "Unknown user";
+            const usernameHandle = otherProfile?.username?.trim() ? `@${otherProfile.username.trim()}` : "@unknown";
             return (
               <div key={friendship.id} className="rounded-xl border border-zinc-200 p-3">
-                <p className="text-sm text-zinc-800">User: {otherUserId}</p>
+                <p className="text-sm font-medium text-zinc-800">{preferredName}</p>
+                <p className="text-xs text-zinc-600">{usernameHandle}</p>
                 <p className="text-xs text-zinc-600">Status: {friendship.status}</p>
                 {isIncoming ? (
                   <div className="mt-2 flex gap-2">

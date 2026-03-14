@@ -88,7 +88,12 @@ function SettingsInner() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-2xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-        <h1 className="text-2xl font-bold text-zinc-900">Profile Settings</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-zinc-900">Profile Settings</h1>
+          <Link href="/" className="text-sm text-zinc-700 underline">
+            Back to map
+          </Link>
+        </div>
         <form onSubmit={onSave} className="mt-4 space-y-3">
           <label className="block text-sm text-zinc-700">
             Username

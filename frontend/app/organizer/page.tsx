@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { AuthGate } from "@/components/AuthGate";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { isOrganizerUser } from "@/lib/roles";
@@ -124,7 +125,12 @@ function OrganizerInner() {
     return (
       <main className="mx-auto min-h-screen w-full max-w-3xl p-4">
         <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-          <h1 className="text-2xl font-bold text-zinc-900">Organizer Access</h1>
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-2xl font-bold text-zinc-900">Organizer Access</h1>
+            <Link href="/" className="text-sm text-zinc-700 underline">
+              Back to map
+            </Link>
+          </div>
           <p className="mt-1 text-sm text-zinc-600">
             You are not verified yet. Submit verification details below.
           </p>
@@ -163,7 +169,12 @@ function OrganizerInner() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-4xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-        <h1 className="text-2xl font-bold text-zinc-900">Organizer Dashboard</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-zinc-900">Organizer Dashboard</h1>
+          <Link href="/" className="text-sm text-zinc-700 underline">
+            Back to map
+          </Link>
+        </div>
         <p className="mt-1 text-sm text-zinc-600">Create and manage events, then monitor engagement.</p>
 
         <form onSubmit={createEvent} className="mt-4 grid gap-2 md:grid-cols-2">
