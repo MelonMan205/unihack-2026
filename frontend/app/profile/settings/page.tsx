@@ -21,8 +21,8 @@ function SettingsInner() {
 
   useEffect(() => {
     if (!client) return;
-    client.auth.getUser().then(async ({ data }) => {
-      const nextUserId = data.user?.id ?? null;
+    client.auth.getSession().then(async ({ data }) => {
+      const nextUserId = data.session?.user?.id ?? null;
       setUserId(nextUserId);
       if (!nextUserId) return;
 

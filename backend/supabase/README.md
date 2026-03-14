@@ -26,6 +26,9 @@ This folder contains the Supabase schema required for Happs, aligned with the cu
 - `migrations/007_notification_and_forecast_jobs.sql`
   - Adds scheduler RPC jobs for event reminder queueing and crowd forecast refresh.
   - Adds optional `events.start_at/end_at` for time-based reminders.
+- `migrations/008_safe_profile_search.sql`
+  - Adds hardened `app_search_profiles(search_text, max_results)` RPC for friend search.
+  - Enforces auth, minimum query length, wildcard sanitization, capped result size, and prefix-only indexed matching.
 
 ## Apply migrations
 
@@ -44,6 +47,7 @@ If you prefer SQL Editor, run migration files in order:
 5. `005_users_spec_foundation.sql`
 6. `006_users_spec_security_rpc.sql`
 7. `007_notification_and_forecast_jobs.sql`
+8. `008_safe_profile_search.sql`
 
 ## Worker integration (unchanged)
 

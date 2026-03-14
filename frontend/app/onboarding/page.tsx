@@ -36,15 +36,16 @@ function OnboardingInner() {
 
   useEffect(() => {
     if (!client) return;
-    client.auth.getUser().then(async ({ data }) => {
-      if (!data.user) {
+    client.auth.getSession().then(async ({ data }) => {
+      const sessionUser = data.session?.user;
+      if (!sessionUser) {
         router.replace("/auth");
         return;
       }
       const { data: profileCore, error: profileCoreError } = await client
         .from("profiles")
         .select("onboarding_completed,username")
-        .eq("id", data.user.id)
+        .eq("id", sessionUser.id)
         .maybeSingle();
       if (profileCoreError) {
         setError(profileCoreError.message);
@@ -59,7 +60,7 @@ function OnboardingInner() {
       const { data: interestData, error: interestsError } = await client
         .from("profiles")
         .select("interests")
-        .eq("id", data.user.id)
+        .eq("id", sessionUser.id)
         .maybeSingle();
 
       if (interestsError) {
@@ -106,8 +107,8 @@ function OnboardingInner() {
     }
 
     setIsPending(true);
-    const { data: userData } = await client.auth.getUser();
-    const user = userData.user;
+    const { data: sessionData } = await client.auth.getSession();
+    const user = sessionData.session?.user;
     if (!user) {
       setIsPending(false);
       setError("Session expired. Please sign in again.");

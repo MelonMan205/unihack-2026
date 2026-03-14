@@ -66,8 +66,8 @@ function OrganizerInner() {
 
   useEffect(() => {
     if (!client) return;
-    client.auth.getUser().then(({ data }) => {
-      const uid = data.user?.id ?? null;
+    client.auth.getSession().then(({ data }) => {
+      const uid = data.session?.user?.id ?? null;
       setUserId(uid);
       if (uid) {
         void loadData(uid);

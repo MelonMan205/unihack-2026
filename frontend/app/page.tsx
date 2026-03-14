@@ -257,8 +257,8 @@ export default function HomePage() {
     const client = getSupabaseBrowserClient();
     if (!client) return;
 
-    client.auth.getUser().then(({ data }) => {
-      setAuthUserId(data.user?.id ?? null);
+    client.auth.getSession().then(({ data }) => {
+      setAuthUserId(data.session?.user?.id ?? null);
     });
   }, []);
 

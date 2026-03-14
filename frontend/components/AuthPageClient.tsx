@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { User } from "@supabase/supabase-js";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 type AuthMode = "sign-in" | "sign-up";
@@ -19,9 +20,15 @@ function buildAuthRedirect(nextPath?: string): string | undefined {
   }
 
   const configuredBase = process.env.NEXT_PUBLIC_AUTH_REDIRECT_BASE_URL?.trim();
-  const base = configuredBase ? configuredBase.replace(/\/+$/, "") : window.location.origin;
-  const nextQuery = nextPath ? `?next=${encodeURIComponent(nextPath)}` : "";
-  return `${base}/auth${nextQuery}`;
+  const redirectUrl = configuredBase
+    ? new URL(configuredBase, window.location.origin)
+    : new URL(window.location.origin);
+  redirectUrl.pathname = "/auth";
+  redirectUrl.search = "";
+  if (nextPath) {
+    redirectUrl.searchParams.set("next", nextPath);
+  }
+  return redirectUrl.toString();
 }
 
 export function AuthPageClient() {
@@ -38,24 +45,77 @@ export function AuthPageClient() {
 
   const client = getSupabaseBrowserClient();
 
-  useEffect(() => {
-    if (!client) return;
-    client.auth.getUser().then(async ({ data }) => {
-      if (!data.user) {
-        return;
-      }
+  const routeAfterAuth = useCallback(
+    async (user: User) => {
+      if (!client) return;
       const { data: profile } = await client
         .from("profiles")
         .select("onboarding_completed")
-        .eq("id", data.user.id)
+        .eq("id", user.id)
         .maybeSingle();
-      if (profile?.onboarding_completed) {
-        router.replace(nextPath);
-      } else {
+
+      if (!profile?.onboarding_completed) {
         router.replace("/onboarding");
+      } else {
+        router.replace(nextPath);
+      }
+    },
+    [client, nextPath, router],
+  );
+
+  useEffect(() => {
+    if (!client) return;
+    let isDisposed = false;
+
+    const handleSession = async () => {
+      const { data } = await client.auth.getSession();
+      const sessionUser = data.session?.user;
+      if (!sessionUser || isDisposed) {
+        return;
+      }
+      await routeAfterAuth(sessionUser);
+    };
+
+    // Handle OAuth return URLs explicitly to avoid callback race conditions.
+    const authCode = params.get("code");
+    if (authCode) {
+      setIsPending(true);
+      client.auth
+        .exchangeCodeForSession(authCode)
+        .then(async ({ error, data }) => {
+          if (error) {
+            setErrorText(toMessage(error));
+            return;
+          }
+          if (data.user) {
+            await routeAfterAuth(data.user);
+          }
+        })
+        .finally(() => {
+          if (!isDisposed) {
+            setIsPending(false);
+          }
+        });
+    } else {
+      void handleSession();
+    }
+
+    const {
+      data: { subscription },
+    } = client.auth.onAuthStateChange((event, session) => {
+      if (isDisposed) {
+        return;
+      }
+      if (event === "SIGNED_IN" && session?.user) {
+        void routeAfterAuth(session.user);
       }
     });
-  }, [client, nextPath, router]);
+
+    return () => {
+      isDisposed = true;
+      subscription.unsubscribe();
+    };
+  }, [client, params, routeAfterAuth]);
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -69,6 +129,7 @@ export function AuthPageClient() {
 
     setIsPending(true);
     try {
+      let authenticatedUser: User | null = null;
       if (mode === "sign-up") {
         const emailRedirectTo = buildAuthRedirect(nextPath);
         const { data, error } = await client.auth.signUp({
@@ -88,28 +149,18 @@ export function AuthPageClient() {
           setSuccessText("Check your email to verify your account, then sign in.");
           return;
         }
+        authenticatedUser = data.user ?? data.session?.user ?? null;
       } else {
-        const { error } = await client.auth.signInWithPassword({ email, password });
+        const { data, error } = await client.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        authenticatedUser = data.user ?? data.session?.user ?? null;
       }
 
-      const { data: userData } = await client.auth.getUser();
-      if (!userData.user) {
+      if (!authenticatedUser) {
         router.replace(`/auth?next=${encodeURIComponent(nextPath)}`);
         return;
       }
-
-      const { data: profile } = await client
-        .from("profiles")
-        .select("onboarding_completed")
-        .eq("id", userData.user.id)
-        .maybeSingle();
-
-      if (!profile?.onboarding_completed) {
-        router.replace("/onboarding");
-      } else {
-        router.replace(nextPath);
-      }
+      await routeAfterAuth(authenticatedUser);
     } catch (error) {
       setErrorText(toMessage(error));
     } finally {
@@ -126,12 +177,14 @@ export function AuthPageClient() {
     }
 
     const redirectTo = buildAuthRedirect(nextPath);
+    setIsPending(true);
     const { error } = await client.auth.signInWithOAuth({
       provider,
       options: { redirectTo },
     });
     if (error) {
       setErrorText(toMessage(error));
+      setIsPending(false);
     }
   };
 
