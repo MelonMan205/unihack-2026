@@ -1,2 +1,3 @@
 - FRONTEND: NextJS port doesnt have the font import working properly
 - wrangler toml and env var/secret discrepancy, need to figure out why env var remote sitill there despite novalue in toml
+- ICON on mobile for add to homescreen needs to be changed, currentlynot wokring, and change name of the main webapp from spontatneity events to happs. 
