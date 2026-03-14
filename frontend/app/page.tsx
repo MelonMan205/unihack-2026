@@ -474,6 +474,7 @@ export default function HomePage() {
   const timeWindowIndex = TIME_WINDOWS.indexOf(timeWindow);
   const radiusSliderProgress = ((radiusKm - MIN_RADIUS_KM) / (MAX_RADIUS_KM - MIN_RADIUS_KM)) * 100;
   const timeSliderProgress = (timeWindowIndex / (TIME_WINDOWS.length - 1)) * 100;
+  const isEventSheetOpen = Boolean(selectedEvent);
   const filteredEvents = useMemo(
     () =>
       searchedEvents.filter((event) => {
@@ -533,13 +534,17 @@ export default function HomePage() {
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1200] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4">
+      <div
+        className={`pointer-events-none absolute inset-x-0 bottom-0 z-[1200] pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-all duration-200 sm:pb-4 ${
+          isEventSheetOpen ? "translate-y-6 opacity-0 sm:translate-y-0 sm:opacity-100" : "translate-y-0 opacity-100"
+        }`}
+      >
         <div className="mx-auto w-full max-w-4xl px-3 sm:px-4">
-          <Card className="glass-panel pointer-events-auto w-full border-white/30 animate-rise-delayed">
-            <CardContent className="flex flex-col gap-3 p-3 pt-4 sm:p-4 sm:pt-5">
+          <Card className="glass-panel discover-dock pointer-events-auto w-full border-white/30 animate-rise-delayed">
+            <CardContent className="flex flex-col gap-2.5 p-2.5 pt-3 sm:gap-3 sm:p-4 sm:pt-5">
               <div className="flex flex-col gap-2 pt-0.5 sm:flex-row sm:items-start sm:justify-between">
                 <div className="pointer-events-auto max-w-full overflow-x-auto no-scrollbar">
-                  <p className="inline-flex items-center gap-1 whitespace-nowrap text-[16px] font-semibold text-zinc-900 sm:text-[17px]">
+                  <p className="inline-flex items-center gap-1 whitespace-nowrap text-[14px] font-semibold text-zinc-900 sm:text-[17px]">
                     <span>{filteredEvents.length}</span>
                     <span>spontaneous things within</span>
                     <button
@@ -565,7 +570,7 @@ export default function HomePage() {
                   </p>
                 </div>
 
-                <div className="pointer-events-auto flex items-center gap-2">
+                <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
                   <Button
                     type="button"
                     variant={locationMode === "current" ? "default" : "outline"}
@@ -574,19 +579,19 @@ export default function HomePage() {
                       setLocationMode("current");
                       syncCurrentLocation();
                     }}
-                    className={`icon-filter-btn h-9 rounded-[12px] px-3 text-xs ${
+                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
                       locationMode === "current" ? "icon-filter-btn--active" : ""
                     }`}
                   >
-                    <MapPin className="mr-1.5 h-3.5 w-3.5" />
-                      current
+                    <MapPin className="mr-1 h-3.5 w-3.5" />
+                    current
                   </Button>
                   <Button
                     type="button"
                     variant={showRadiusIndicator ? "default" : "outline"}
                     size="sm"
                     onClick={() => setShowRadiusIndicator((current) => !current)}
-                    className={`icon-filter-btn h-9 rounded-[12px] px-3 text-xs ${
+                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
                       showRadiusIndicator ? "icon-filter-btn--active" : ""
                     }`}
                   >
@@ -597,12 +602,12 @@ export default function HomePage() {
                     variant={locationMode === "pick" ? "default" : "outline"}
                     size="sm"
                     onClick={() => setLocationMode("pick")}
-                    className={`icon-filter-btn h-9 rounded-[12px] px-3 text-xs ${
+                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
                       locationMode === "pick" ? "icon-filter-btn--active" : ""
                     }`}
                   >
-                    <Crosshair className="mr-1.5 h-3.5 w-3.5" />
-                      pick
+                    <Crosshair className="mr-1 h-3.5 w-3.5" />
+                    pick
                   </Button>
                 </div>
               </div>
@@ -665,14 +670,14 @@ export default function HomePage() {
                 ) : null}
               </div>
 
-              <div className="no-scrollbar flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 pt-1 lg:hidden">
+              <div className="no-scrollbar flex snap-x snap-mandatory gap-1.5 overflow-x-auto pb-1 pt-0.5 lg:hidden">
                 {FILTERS.map((filter) => (
                   <Button
                     key={filter.value}
                     variant={selectedCategory === filter.value ? "default" : "outline"}
                     size="sm"
                     onClick={() => setSelectedCategory(filter.value)}
-                    className={`icon-filter-btn h-10 snap-start px-4 ${
+                    className={`icon-filter-btn h-9 snap-start px-3 text-[11px] sm:h-10 sm:px-4 sm:text-sm ${
                       selectedCategory === filter.value ? "icon-filter-btn--active" : ""
                     }`}
                   >
@@ -681,7 +686,7 @@ export default function HomePage() {
                   </Button>
                 ))}
               </div>
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
                 <div className="pointer-events-auto relative min-w-0 flex-1 lg:min-w-[220px]">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                   <input
@@ -689,24 +694,24 @@ export default function HomePage() {
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
                     placeholder="search for anything..."
-                    className="h-11 w-full rounded-[14px] border border-zinc-300/70 bg-white/82 pl-9 pr-3 text-sm text-zinc-800 outline-none placeholder:text-zinc-500 focus:border-zinc-400"
+                    className="h-10 w-full rounded-[13px] border border-zinc-300/70 bg-white/82 pl-9 pr-3 text-[13px] text-zinc-800 outline-none placeholder:text-zinc-500 focus:border-zinc-400 sm:h-11 sm:rounded-[14px] sm:text-sm"
                   />
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-1.5 sm:gap-2">
                   {authUserId ? (
                     <>
-                      <Link href="/profile/settings" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                      <Link href="/profile/settings" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
                         profile
                       </Link>
-                      <Link href="/friends" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                      <Link href="/friends" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
                         friends
                       </Link>
-                      <Link href="/saved" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                      <Link href="/saved" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
                         saved
                       </Link>
                     </>
                   ) : (
-                    <Link href="/auth" className="icon-filter-btn h-11 rounded-[14px] border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700">
+                    <Link href="/auth" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
                       sign in
                     </Link>
                   )}
