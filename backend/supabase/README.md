@@ -14,6 +14,9 @@ This folder contains the Supabase schema required for Happs, aligned with the cu
 - `migrations/003_social_tables.sql`
   - Creates `public.friends`, `public.saved_events`, and `public.rsvps` with RLS policies.
   - Adds friend-based profile visibility policy.
+- `migrations/004_waitlist_signups.sql`
+  - Creates `public.waitlist_signups` for landing-page waitlist captures.
+  - Intended for service-role inserts from `backend/waitlist-worker`.
 
 ## Apply migrations
 
@@ -28,6 +31,7 @@ If you prefer SQL Editor, run migration files in order:
 1. `001_events.sql`
 2. `002_profiles_and_auth_trigger.sql`
 3. `003_social_tables.sql`
+4. `004_waitlist_signups.sql`
 
 ## Worker integration (unchanged)
 
