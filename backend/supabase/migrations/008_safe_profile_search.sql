@@ -42,7 +42,6 @@ begin
     and p.username is not null
     and btrim(p.username) <> ''
     and lower(p.username) like normalized_query || '%'
-    and public.can_view_profile(p.id)
   order by
     case when lower(p.username) = normalized_query then 0 else 1 end,
     char_length(p.username),

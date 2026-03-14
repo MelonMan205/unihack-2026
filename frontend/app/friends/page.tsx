@@ -51,7 +51,7 @@ function FriendsInner() {
   useEffect(() => {
     if (!client) return;
     const query = searchQuery.trim().toLowerCase();
-    const safeQuery = query.replace(/[%_\\]/g, "");
+    const safeQuery = query.replace(/^@+/, "").replace(/[%_\\]/g, "");
     if (safeQuery.length < 3) {
       setSearchResults([]);
       return;
