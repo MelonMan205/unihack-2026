@@ -7,18 +7,15 @@ import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 type Friendship = {
   id: string;
-  requester_id: string;
-  addressee_id: string;
   status: string;
+  is_incoming: boolean;
+  other_user_id: string;
+  other_username: string | null;
+  other_display_name: string | null;
 };
 
 type ProfileSearchResult = {
   id: string;
-  username: string | null;
-  display_name: string | null;
-};
-
-type ProfilePreview = {
   username: string | null;
   display_name: string | null;
 };
@@ -29,18 +26,13 @@ function FriendsInner() {
   const [friendships, setFriendships] = useState<Friendship[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<ProfileSearchResult[]>([]);
-  const [profilesById, setProfilesById] = useState<Record<string, ProfilePreview>>({});
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
   const loadFriendships = useCallback(async (currentUserId: string) => {
     if (!client) return;
-    const { data } = await client
-      .from("friendships")
-      .select("id,requester_id,addressee_id,status")
-      .or(`requester_id.eq.${currentUserId},addressee_id.eq.${currentUserId}`)
-      .order("updated_at", { ascending: false });
+    const { data } = await client.rpc("app_list_friendships", { max_results: 120 });
     setFriendships((data as Friendship[] | null) ?? []);
   }, [client]);
 
@@ -54,40 +46,6 @@ function FriendsInner() {
       }
     });
   }, [client, loadFriendships]);
-
-  useEffect(() => {
-    if (!client || !userId || friendships.length === 0) {
-      return;
-    }
-
-    const otherUserIds = Array.from(
-      new Set(
-        friendships
-          .map((friendship) =>
-            friendship.requester_id === userId ? friendship.addressee_id : friendship.requester_id,
-          )
-          .filter(Boolean),
-      ),
-    );
-    if (otherUserIds.length === 0) {
-      return;
-    }
-
-    client
-      .from("profiles")
-      .select("id,username,display_name")
-      .in("id", otherUserIds)
-      .then(({ data }) => {
-        const nextProfiles: Record<string, ProfilePreview> = {};
-        for (const profile of (data as ProfileSearchResult[] | null) ?? []) {
-          nextProfiles[profile.id] = {
-            username: profile.username ?? null,
-            display_name: profile.display_name ?? null,
-          };
-        }
-        setProfilesById(nextProfiles);
-      });
-  }, [client, friendships, userId]);
 
   useEffect(() => {
     if (!client) return;
@@ -221,18 +179,15 @@ function FriendsInner() {
 
         <div className="mt-5 space-y-2">
           {friendships.map((friendship) => {
-            const isIncoming = friendship.addressee_id === userId && friendship.status === "pending";
-            const otherUserId = friendship.requester_id === userId ? friendship.addressee_id : friendship.requester_id;
-            const otherProfile = profilesById[otherUserId];
             const preferredName =
-              otherProfile?.display_name?.trim() || otherProfile?.username?.trim() || "Unknown user";
-            const usernameHandle = otherProfile?.username?.trim() ? `@${otherProfile.username.trim()}` : "@unknown";
+              friendship.other_display_name?.trim() || friendship.other_username?.trim() || "Unknown user";
+            const usernameHandle = friendship.other_username?.trim() ? `@${friendship.other_username.trim()}` : "@unknown";
             return (
               <div key={friendship.id} className="rounded-xl border border-zinc-200 p-3">
                 <p className="text-sm font-medium text-zinc-800">{preferredName}</p>
                 <p className="text-xs text-zinc-600">{usernameHandle}</p>
                 <p className="text-xs text-zinc-600">Status: {friendship.status}</p>
-                {isIncoming ? (
+                {friendship.is_incoming && friendship.status === "pending" ? (
                   <div className="mt-2 flex gap-2">
                     <button
                       type="button"

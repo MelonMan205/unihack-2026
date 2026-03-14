@@ -29,6 +29,9 @@ This folder contains the Supabase schema required for Happs, aligned with the cu
 - `migrations/008_safe_profile_search.sql`
   - Adds hardened `app_search_profiles(search_text, max_results)` RPC for friend search.
   - Enforces auth, minimum query length, wildcard sanitization, capped result size, and prefix-only indexed matching.
+- `migrations/009_safe_friendships_list.sql`
+  - Adds hardened `app_list_friendships(max_results)` RPC for loading friendship rows with profile preview fields.
+  - Keeps client reads off ad-hoc `friendships`/`profiles` queries.
 
 ## Apply migrations
 
@@ -48,6 +51,7 @@ If you prefer SQL Editor, run migration files in order:
 6. `006_users_spec_security_rpc.sql`
 7. `007_notification_and_forecast_jobs.sql`
 8. `008_safe_profile_search.sql`
+9. `009_safe_friendships_list.sql`
 
 ## Worker integration (unchanged)
 
