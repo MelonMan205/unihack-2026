@@ -29,6 +29,7 @@ const INTERESTS = [
 function OnboardingInner() {
   const router = useRouter();
   const client = getSupabaseBrowserClient();
+  const [username, setUsername] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState("");
@@ -42,7 +43,7 @@ function OnboardingInner() {
       }
       const { data: profileCore, error: profileCoreError } = await client
         .from("profiles")
-        .select("onboarding_completed")
+        .select("onboarding_completed,username")
         .eq("id", data.user.id)
         .maybeSingle();
       if (profileCoreError) {
@@ -53,6 +54,7 @@ function OnboardingInner() {
         router.replace("/");
         return;
       }
+      setUsername(profileCore?.username ?? "");
 
       const { data: interestData, error: interestsError } = await client
         .from("profiles")
@@ -75,7 +77,10 @@ function OnboardingInner() {
     });
   }, [client, router]);
 
-  const canSubmit = useMemo(() => selected.length >= 3 && !isPending, [selected.length, isPending]);
+  const canSubmit = useMemo(
+    () => username.trim().length >= 3 && selected.length >= 3 && !isPending,
+    [username, selected.length, isPending],
+  );
 
   const toggleInterest = (value: string) => {
     setSelected((current) =>
@@ -89,6 +94,12 @@ function OnboardingInner() {
       setError("Missing Supabase configuration.");
       return;
     }
+    const normalizedUsername = username.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(normalizedUsername)) {
+      setError("Username must be 3-20 characters and use only letters, numbers, or underscores.");
+      return;
+    }
+
     if (selected.length < 3) {
       setError("Select at least 3 interests.");
       return;
@@ -106,13 +117,17 @@ function OnboardingInner() {
 
     const { error: updateError } = await client
       .from("profiles")
-      .update({ interests: selected, onboarding_completed: true })
+      .update({ username: normalizedUsername, interests: selected, onboarding_completed: true })
       .eq("id", user.id);
 
     setIsPending(false);
     if (updateError) {
       if (isMissingProfilesInterestsColumn(updateError)) {
         setError(MISSING_PROFILES_INTERESTS_MESSAGE);
+        return;
+      }
+      if (updateError.code === "23505") {
+        setError("That username is already taken.");
         return;
       }
       setError(updateError.message);
@@ -124,8 +139,21 @@ function OnboardingInner() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-4 py-8">
       <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <h1 className="text-2xl font-bold text-zinc-900">Choose your interests</h1>
-        <p className="mt-1 text-sm text-zinc-600">Pick at least 3 so we can personalize your event map.</p>
+        <h1 className="text-2xl font-bold text-zinc-900">Set up your profile</h1>
+        <p className="mt-1 text-sm text-zinc-600">Choose a username and at least 3 interests.</p>
+
+        <label className="mt-4 block text-sm text-zinc-700">
+          Username
+          <input
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="your_name"
+            autoCapitalize="none"
+            autoCorrect="off"
+            className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2"
+          />
+          <span className="mt-1 block text-xs text-zinc-500">3-20 chars, letters/numbers/underscore.</span>
+        </label>
 
         <div className="mt-4 flex flex-wrap gap-2">
           {INTERESTS.map((interest) => {

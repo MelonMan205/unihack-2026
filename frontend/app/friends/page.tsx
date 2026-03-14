@@ -11,12 +11,21 @@ type Friendship = {
   status: string;
 };
 
+type ProfileSearchResult = {
+  id: string;
+  username: string | null;
+  display_name: string | null;
+};
+
 function FriendsInner() {
   const client = getSupabaseBrowserClient();
   const [userId, setUserId] = useState<string>("");
   const [friendships, setFriendships] = useState<Friendship[]>([]);
-  const [targetUserId, setTargetUserId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ProfileSearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
 
   const loadFriendships = useCallback(async (currentUserId: string) => {
     if (!client) return;
@@ -39,17 +48,67 @@ function FriendsInner() {
     });
   }, [client, loadFriendships]);
 
-  const sendRequest = async () => {
+  useEffect(() => {
+    if (!client) return;
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+
+    let isCancelled = false;
+    setIsSearching(true);
+    const timeoutId = window.setTimeout(() => {
+      Promise.all([
+        client.from("profiles").select("id,username,display_name").ilike("username", `%${query}%`).limit(8),
+        client.from("profiles").select("id,username,display_name").ilike("display_name", `%${query}%`).limit(8),
+      ]).then(([usernameMatch, nameMatch]) => {
+        if (isCancelled) {
+          return;
+        }
+
+        const searchError = usernameMatch.error ?? nameMatch.error;
+        if (searchError) {
+          setError(searchError.message);
+          setSearchResults([]);
+          setIsSearching(false);
+          return;
+        }
+
+        const merged = [...(usernameMatch.data ?? []), ...(nameMatch.data ?? [])] as ProfileSearchResult[];
+        const unique = new Map<string, ProfileSearchResult>();
+        for (const profile of merged) {
+          if (profile.id !== userId) {
+            unique.set(profile.id, profile);
+          }
+        }
+
+        setSearchResults(Array.from(unique.values()).slice(0, 8));
+        setIsSearching(false);
+      });
+    }, 250);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeoutId);
+      setIsSearching(false);
+    };
+  }, [client, searchQuery, userId]);
+
+  const sendRequest = async (targetId: string) => {
     if (!client) return;
     setError("");
+    setMessage("");
     const { error: requestError } = await client.rpc("app_send_friend_request", {
-      target_user_id: targetUserId,
+      target_user_id: targetId,
     });
     if (requestError) {
       setError(requestError.message);
       return;
     }
-    setTargetUserId("");
+    setMessage("Friend request sent.");
+    setSearchQuery("");
+    setSearchResults([]);
     if (userId) {
       await loadFriendships(userId);
     }
@@ -76,21 +135,39 @@ function FriendsInner() {
         <h1 className="text-2xl font-bold text-zinc-900">Friends</h1>
         <p className="mt-1 text-sm text-zinc-600">Send requests, accept invites, and manage your social network.</p>
 
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">Add friend</p>
           <input
-            value={targetUserId}
-            onChange={(event) => setTargetUserId(event.target.value)}
-            placeholder="Target user UUID"
-            className="flex-1 rounded-xl border border-zinc-300 px-3 py-2"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search by name or username"
+            className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2"
           />
-          <button
-            type="button"
-            onClick={() => void sendRequest()}
-            className="rounded-xl bg-amber-400 px-4 py-2 font-semibold text-zinc-900 hover:bg-amber-300"
-          >
-            Send request
-          </button>
+          <div className="mt-2 space-y-2">
+            {isSearching ? <p className="text-xs text-zinc-500">Searching...</p> : null}
+            {!isSearching && searchQuery.trim().length >= 2 && searchResults.length === 0 ? (
+              <p className="text-xs text-zinc-500">No matching users found.</p>
+            ) : null}
+            {searchResults.map((profile) => (
+              <div key={profile.id} className="flex items-center justify-between rounded-lg border border-zinc-200 bg-white p-2">
+                <div>
+                  <p className="text-sm font-medium text-zinc-900">
+                    {profile.display_name?.trim() || profile.username || "Unnamed user"}
+                  </p>
+                  <p className="text-xs text-zinc-600">@{profile.username || "no-username"}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void sendRequest(profile.id)}
+                  className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-amber-300"
+                >
+                  Add
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
+        {message ? <p className="mt-2 text-sm text-emerald-700">{message}</p> : null}
         {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
 
         <div className="mt-5 space-y-2">

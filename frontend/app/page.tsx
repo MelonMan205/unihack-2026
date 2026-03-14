@@ -15,6 +15,7 @@ import {
 import {
   Crosshair,
   Dumbbell,
+  ExternalLink,
   Grid2x2,
   MapPin,
   Palette,
@@ -198,13 +199,15 @@ export default function HomePage() {
   const [savedEventIds, setSavedEventIds] = useState<Set<string>>(new Set());
   const [userLocation, setUserLocation] = useState<[number, number]>(DEFAULT_LOCATION);
   const [locationLabel, setLocationLabel] = useState("locating you...");
+  const [showRadiusIndicator, setShowRadiusIndicator] = useState(true);
   const [isLocationReady, setIsLocationReady] = useState(false);
+  const [sheetImageLoadError, setSheetImageLoadError] = useState(false);
   const [, startTransition] = useTransition();
 
   const syncCurrentLocation = useCallback(() => {
     if (!("geolocation" in navigator)) {
       setUserLocation(DEFAULT_LOCATION);
-      setLocationLabel("melbourne fallback");
+      setLocationLabel("location unavailable");
       setIsLocationReady(true);
       return;
     }
@@ -218,12 +221,16 @@ export default function HomePage() {
       },
       () => {
         setUserLocation(DEFAULT_LOCATION);
-        setLocationLabel("using melbourne fallback");
+        setLocationLabel("location unavailable");
         setIsLocationReady(true);
       },
       { enableHighAccuracy: true, timeout: 7000 },
     );
   }, []);
+
+  useEffect(() => {
+    setSheetImageLoadError(false);
+  }, [selectedEvent?.id]);
 
   useEffect(() => {
     try {
@@ -487,6 +494,7 @@ export default function HomePage() {
           onSelectEvent={(event) => setSelectedEvent(event)}
           userLocation={userLocation}
           radiusKm={radiusKm}
+          showRadiusIndicator={showRadiusIndicator}
           isPickingLocation={locationMode === "pick"}
           onPickLocation={(location) => {
             if (locationMode !== "pick") {
@@ -572,6 +580,17 @@ export default function HomePage() {
                   >
                     <MapPin className="mr-1.5 h-3.5 w-3.5" />
                       current
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={showRadiusIndicator ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowRadiusIndicator((current) => !current)}
+                    className={`icon-filter-btn h-9 rounded-[12px] px-3 text-xs ${
+                      showRadiusIndicator ? "icon-filter-btn--active" : ""
+                    }`}
+                  >
+                    radius {showRadiusIndicator ? "on" : "off"}
                   </Button>
                   <Button
                     type="button"
@@ -701,20 +720,58 @@ export default function HomePage() {
       <Sheet open={Boolean(selectedEvent)} onOpenChange={(open) => !open && setSelectedEvent(null)}>
         <SheetContent
           side="bottom"
-          className="mx-auto z-[1400] max-h-[85dvh] max-w-3xl overflow-y-auto rounded-t-[22px] border border-white/85 bg-white/88 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-12 shadow-[0_30px_80px_rgba(15,23,42,0.35)] backdrop-blur-3xl sm:px-5"
+          className="sheet-native-scroll mx-auto z-[1400] max-h-[85dvh] max-w-3xl overflow-y-auto rounded-t-[22px] border border-white/85 bg-white/88 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-12 shadow-[0_30px_80px_rgba(15,23,42,0.35)] backdrop-blur-3xl sm:px-5"
         >
           {selectedEvent ? (
             <>
-              <div className="relative mb-4 overflow-hidden rounded-2xl border border-white/90 bg-zinc-100/60 shadow-[0_16px_28px_rgba(15,23,42,0.2)]">
-                <Image
-                  src={selectedEvent.photoUrl}
-                  alt={selectedEvent.title}
-                  width={1200}
-                  height={640}
-                  className="h-44 w-full object-cover sm:h-56"
-                />
-                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-zinc-900/35 via-zinc-900/10 to-transparent" />
+              <div className="mb-4 flex items-start justify-end gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void toggleSave(selectedEvent.id)}
+                  className="h-8 rounded-full px-3 text-xs"
+                >
+                  {savedEventIds.has(selectedEvent.id) ? "Saved" : "Save"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (!selectedEvent.sourceUrl) {
+                      return;
+                    }
+                    if (navigator.share) {
+                      void navigator.share({
+                        title: selectedEvent.title,
+                        text: `Check this event: ${selectedEvent.title}`,
+                        url: selectedEvent.sourceUrl,
+                      });
+                      return;
+                    }
+                    void navigator.clipboard.writeText(selectedEvent.sourceUrl);
+                    alert("Event link copied.");
+                  }}
+                  disabled={!selectedEvent.sourceUrl}
+                  className="h-8 rounded-full px-3 text-xs"
+                >
+                  Share
+                </Button>
               </div>
+              {selectedEvent.photoUrl && !sheetImageLoadError ? (
+                <div className="relative mb-4 overflow-hidden rounded-2xl border border-white/90 bg-zinc-100/60 shadow-[0_16px_28px_rgba(15,23,42,0.2)]">
+                  <Image
+                    src={selectedEvent.photoUrl}
+                    alt={selectedEvent.title}
+                    width={1200}
+                    height={640}
+                    className="h-44 w-full object-cover sm:h-56"
+                    onError={() => setSheetImageLoadError(true)}
+                  />
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-zinc-900/35 via-zinc-900/10 to-transparent" />
+                </div>
+              ) : null}
               <SheetHeader>
                 <SheetTitle className="text-xl text-zinc-900">{selectedEvent.title}</SheetTitle>
                 <SheetDescription>{selectedEvent.venue}</SheetDescription>
@@ -746,11 +803,13 @@ export default function HomePage() {
                 ))}
               </div>
 
-              <div className="mt-6 grid grid-cols-2 gap-2">
+              <p className="mt-6 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">attendance</p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
                 <Button
                   type="button"
                   onClick={() => void setAttendance(selectedEvent.id, "interested", "friends")}
-                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                  variant="outline"
+                  className="h-10"
                 >
                   Interested
                 </Button>
@@ -764,30 +823,46 @@ export default function HomePage() {
                 <Button
                   type="button"
                   onClick={() => void setAttendance(selectedEvent.id, "not_going", "only_me")}
-                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                  variant="secondary"
+                  className="h-10"
                 >
                   Not Going
                 </Button>
                 <Button
                   type="button"
-                  onClick={() => void setAttendance(selectedEvent.id, "going", "ghost")}
-                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
-                >
-                  Ghost Mode
-                </Button>
-                <Button
-                  type="button"
                   onClick={() => void checkInToEvent(selectedEvent.id)}
-                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                  variant="outline"
+                  className="h-10"
                 >
                   Check in
                 </Button>
+                {attendanceByEventId[selectedEvent.id] === "going" ||
+                attendanceByEventId[selectedEvent.id] === "checked_in" ? (
+                  <Button
+                    type="button"
+                    onClick={() => void setAttendance(selectedEvent.id, "going", "ghost")}
+                    variant="secondary"
+                    className="h-10"
+                  >
+                    Ghost Mode
+                  </Button>
+                ) : null}
+              </div>
+              <p className="mt-4 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">event</p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
                 <Button
                   type="button"
-                  onClick={() => void toggleSave(selectedEvent.id)}
-                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                  onClick={() => {
+                    if (selectedEvent.sourceUrl) {
+                      window.open(selectedEvent.sourceUrl, "_blank", "noopener,noreferrer");
+                    }
+                  }}
+                  variant="outline"
+                  disabled={!selectedEvent.sourceUrl}
+                  className="h-10"
                 >
-                  {savedEventIds.has(selectedEvent.id) ? "Unsave" : "Save"}
+                  <ExternalLink className="h-4 w-4" />
+                  Open source
                 </Button>
                 <Button
                   type="button"
@@ -797,7 +872,9 @@ export default function HomePage() {
                       alert("Event link copied.");
                     }
                   }}
-                  className="h-10 bg-white text-zinc-900 hover:bg-zinc-100"
+                  variant="outline"
+                  disabled={!selectedEvent.sourceUrl}
+                  className="h-10"
                 >
                   Share link
                 </Button>

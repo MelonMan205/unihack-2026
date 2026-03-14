@@ -14,6 +14,7 @@ type MapViewProps = {
   events: EventPin[];
   userLocation: [number, number];
   radiusKm?: number;
+  showRadiusIndicator?: boolean;
   onSelectEvent: (event: EventPin) => void;
   isPickingLocation?: boolean;
   onPickLocation?: (location: [number, number]) => void;
@@ -70,6 +71,10 @@ function LocationPicker({
   useMapEvents({
     click: (event) => {
       if (!enabled || !onPickLocation) {
+        return;
+      }
+      const targetElement = event.originalEvent.target as HTMLElement | null;
+      if (targetElement?.closest(".leaflet-marker-icon, .leaflet-tooltip, .leaflet-control-container")) {
         return;
       }
       onPickLocation([event.latlng.lat, event.latlng.lng]);
@@ -141,6 +146,7 @@ export function MapView({
   events,
   userLocation,
   radiusKm = 1,
+  showRadiusIndicator = true,
   onSelectEvent,
   isPickingLocation = false,
   onPickLocation,
@@ -167,17 +173,19 @@ export function MapView({
         noWrap
       />
 
-      <Circle
-        center={userLocation}
-        radius={radiusKm * 1000}
-        pathOptions={{
-          color: "#f59e0b",
-          weight: 1.5,
-          opacity: 0.75,
-          fillColor: "#facc15",
-          fillOpacity: 0.14,
-        }}
-      />
+      {showRadiusIndicator ? (
+        <Circle
+          center={userLocation}
+          radius={radiusKm * 1000}
+          pathOptions={{
+            color: "#f59e0b",
+            weight: 1.5,
+            opacity: 0.75,
+            fillColor: "#facc15",
+            fillOpacity: 0.14,
+          }}
+        />
+      ) : null}
 
       <Marker
         position={userLocation}
@@ -198,10 +206,8 @@ export function MapView({
             position={marker.event.location}
             icon={eventIcon(marker.event)}
             eventHandlers={{
-              click: () => {
-                if (isPickingLocation) {
-                  return;
-                }
+              click: (event) => {
+                event.originalEvent.stopPropagation();
                 onSelectEvent(marker.event);
               },
             }}
