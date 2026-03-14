@@ -3,6 +3,10 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { AuthGate } from "@/components/AuthGate";
+import {
+  isMissingProfilesInterestsColumn,
+  MISSING_PROFILES_INTERESTS_MESSAGE,
+} from "@/lib/schema-errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 function SettingsInner() {
@@ -24,7 +28,7 @@ function SettingsInner() {
 
       const { data: profile } = await client
         .from("profiles")
-        .select("username,display_name,bio,privacy_default,interests")
+        .select("username,display_name,bio,privacy_default")
         .eq("id", nextUserId)
         .maybeSingle();
       if (!profile) return;
@@ -33,7 +37,21 @@ function SettingsInner() {
       setDisplayName(profile.display_name ?? "");
       setBio(profile.bio ?? "");
       setPrivacyDefault(profile.privacy_default ?? "friends");
-      setInterestsCsv(Array.isArray(profile.interests) ? profile.interests.join(", ") : "");
+      const { data: interestsData, error: interestsError } = await client
+        .from("profiles")
+        .select("interests")
+        .eq("id", nextUserId)
+        .maybeSingle();
+
+      if (interestsError) {
+        if (isMissingProfilesInterestsColumn(interestsError)) {
+          setMessage(MISSING_PROFILES_INTERESTS_MESSAGE);
+        } else {
+          setMessage(`Error: ${interestsError.message}`);
+        }
+      } else {
+        setInterestsCsv(Array.isArray(interestsData?.interests) ? interestsData.interests.join(", ") : "");
+      }
     });
   }, [client]);
 
@@ -57,6 +75,10 @@ function SettingsInner() {
       })
       .eq("id", userId);
     if (error) {
+      if (isMissingProfilesInterestsColumn(error)) {
+        setMessage(MISSING_PROFILES_INTERESTS_MESSAGE);
+        return;
+      }
       setMessage(`Error: ${error.message}`);
       return;
     }

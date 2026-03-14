@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
+import {
+  isMissingProfilesInterestsColumn,
+  MISSING_PROFILES_INTERESTS_MESSAGE,
+} from "@/lib/schema-errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 const INTERESTS = [
@@ -36,17 +40,37 @@ function OnboardingInner() {
         router.replace("/auth");
         return;
       }
-      const { data: profile } = await client
+      const { data: profileCore, error: profileCoreError } = await client
         .from("profiles")
-        .select("onboarding_completed,interests")
+        .select("onboarding_completed")
         .eq("id", data.user.id)
         .maybeSingle();
-      if (profile?.onboarding_completed) {
+      if (profileCoreError) {
+        setError(profileCoreError.message);
+        return;
+      }
+      if (profileCore?.onboarding_completed) {
         router.replace("/");
         return;
       }
-      if (Array.isArray(profile?.interests) && profile.interests.length > 0) {
-        setSelected(profile.interests.slice(0, 20));
+
+      const { data: interestData, error: interestsError } = await client
+        .from("profiles")
+        .select("interests")
+        .eq("id", data.user.id)
+        .maybeSingle();
+
+      if (interestsError) {
+        if (isMissingProfilesInterestsColumn(interestsError)) {
+          setError(MISSING_PROFILES_INTERESTS_MESSAGE);
+          return;
+        }
+        setError(interestsError.message);
+        return;
+      }
+
+      if (Array.isArray(interestData?.interests) && interestData.interests.length > 0) {
+        setSelected(interestData.interests.slice(0, 20));
       }
     });
   }, [client, router]);
@@ -87,6 +111,10 @@ function OnboardingInner() {
 
     setIsPending(false);
     if (updateError) {
+      if (isMissingProfilesInterestsColumn(updateError)) {
+        setError(MISSING_PROFILES_INTERESTS_MESSAGE);
+        return;
+      }
       setError(updateError.message);
       return;
     }
