@@ -13,6 +13,17 @@ function toMessage(error: unknown): string {
   return "Authentication failed. Please try again.";
 }
 
+function buildAuthRedirect(nextPath?: string): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const configuredBase = process.env.NEXT_PUBLIC_AUTH_REDIRECT_BASE_URL?.trim();
+  const base = configuredBase ? configuredBase.replace(/\/+$/, "") : window.location.origin;
+  const nextQuery = nextPath ? `?next=${encodeURIComponent(nextPath)}` : "";
+  return `${base}/auth${nextQuery}`;
+}
+
 export function AuthPageClient() {
   const router = useRouter();
   const params = useSearchParams();
@@ -59,8 +70,7 @@ export function AuthPageClient() {
     setIsPending(true);
     try {
       if (mode === "sign-up") {
-        const emailRedirectTo =
-          typeof window !== "undefined" ? `${window.location.origin}/auth?next=${encodeURIComponent(nextPath)}` : undefined;
+        const emailRedirectTo = buildAuthRedirect(nextPath);
         const { data, error } = await client.auth.signUp({
           email,
           password,
@@ -115,7 +125,7 @@ export function AuthPageClient() {
       return;
     }
 
-    const redirectTo = typeof window !== "undefined" ? `${window.location.origin}/auth?next=${encodeURIComponent(nextPath)}` : undefined;
+    const redirectTo = buildAuthRedirect(nextPath);
     const { error } = await client.auth.signInWithOAuth({
       provider,
       options: { redirectTo },
@@ -136,7 +146,7 @@ export function AuthPageClient() {
       setErrorText("Enter your email first, then press reset password.");
       return;
     }
-    const redirectTo = typeof window !== "undefined" ? `${window.location.origin}/auth` : undefined;
+    const redirectTo = buildAuthRedirect();
     const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
     if (error) {
       setErrorText(toMessage(error));
