@@ -120,6 +120,12 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.52);
 }
 
+.discover-dock {
+  max-height: min(68dvh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .icon-filter-btn {
   transition:
     transform 200ms ease,
@@ -620,6 +626,83 @@ body {
 }
 
 @media (max-width: 640px) {
+  .discover-dock {
+    max-height: min(58dvh, 430px);
+    border-radius: 16px;
+  }
+
+  .discover-inline-chip {
+    min-height: 26px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .discover-control-panel {
+    padding: 8px 10px 9px;
+    border-radius: 13px;
+  }
+
+  .discover-slider {
+    height: 24px;
+  }
+
+  .discover-slider::-webkit-slider-runnable-track,
+  .discover-slider::-moz-range-track,
+  .discover-slider::-moz-range-progress {
+    height: 6px;
+  }
+
+  .discover-slider::-webkit-slider-thumb,
+  .discover-slider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+  }
+
+  .discover-slider::-webkit-slider-thumb {
+    margin-top: -5px;
+  }
+
+  .discover-slider-labels {
+    font-size: 9px;
+    margin-top: 4px;
+  }
+
+  .photo-pin {
+    width: 48px;
+  }
+
+  .photo-pin-card {
+    width: 42px;
+    height: 42px;
+    border-width: 1.5px;
+  }
+
+  .photo-pin-label {
+    left: 4px;
+    bottom: 4px;
+    min-width: 22px;
+    height: 15px;
+    font-size: 8px;
+    padding: 0 4px;
+  }
+
+  .photo-pin-tip {
+    border-left-width: 6px;
+    border-right-width: 6px;
+    border-top-width: 9px;
+  }
+
+  .cluster-pin {
+    width: 34px;
+    height: 34px;
+    font-size: 10px;
+  }
+
+  .user-pin {
+    width: 12px;
+    height: 12px;
+  }
+
   .apple-map .leaflet-control-container .leaflet-top.leaflet-left {
     /* Move zoom controls to bottom-right on mobile so they are not hidden by the top hero card */
     top: auto;
