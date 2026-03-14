@@ -326,6 +326,27 @@ async function mapWithConcurrency<T, R>(
   return out;
 }
 
+async function forEachWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let cursor = 0;
+
+  async function runOne(): Promise<void> {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      await worker(items[idx], idx);
+    }
+  }
+
+  const runners = Array.from(
+    { length: Math.max(1, Math.min(concurrency, items.length)) },
+    () => runOne()
+  );
+  await Promise.all(runners);
+}
+
 async function isAllowedByRobots(pageUrl: string): Promise<boolean> {
   try {
     const parsed = new URL(pageUrl);
@@ -1014,13 +1035,9 @@ async function runPipeline(env: Env): Promise<PipelineResult> {
         continue;
       }
 
-      const pageResults = await mapWithConcurrency(
-        pages,
-        EVENT_PROCESS_CONCURRENCY,
-        async (page) => processEventPage(page, sourceUrl, resolved, progress)
-      );
+      await forEachWithConcurrency(pages, EVENT_PROCESS_CONCURRENCY, async (page) => {
+        const result = await processEventPage(page, sourceUrl, resolved, progress);
 
-      for (const result of pageResults) {
         if (result.event) {
           validEvents.push(result.event);
 
@@ -1067,7 +1084,7 @@ async function runPipeline(env: Env): Promise<PipelineResult> {
             message,
           });
         }
-      }
+      });
     } catch (err) {
       const message = `${sourceUrl} :: ${String(err)}`;
       errors.push(message);
