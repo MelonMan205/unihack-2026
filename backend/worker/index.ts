@@ -39,6 +39,8 @@ type NormalizedEvent = {
   title: string;
   venue: string | null;
   timeLabel: string;
+  startAtIso: string;
+  startEpochMs: number;
   description: string | null;
   sourceUrl: string;
   source: string;
@@ -55,6 +57,7 @@ type SupabaseEventRow = {
   title: string;
   venue: string | null;
   time_label: string;
+  start_at: string;
   description: string | null;
   source_url: string;
   source: string;
@@ -87,6 +90,7 @@ type ProgressEntry = {
     | "event.validate"
     | "event.geocode"
     | "events.insert"
+    | "events.cleanup"
     | "done"
     | "error";
   status: "info" | "ok" | "warn" | "error";
@@ -100,6 +104,7 @@ type PipelineResult = {
   ok: boolean;
   count: number;
   insertedCount: number;
+  cleanedExpiredCount: number;
   events: NormalizedEvent[];
   invalidEvents: InvalidEventDebug[];
   warning: string | null;
@@ -119,16 +124,18 @@ const GEMINI_URL =
 const USER_AGENT = "Mozilla/5.0 (compatible; UniHackEventWorker/1.0)";
 const OSM_USER_AGENT = "UniHackEventWorker/1.0 (contact: unihack-events@example.com)";
 const MAX_CANDIDATES_PER_SOURCE = 90;
-const MAX_EVENT_PAGES_PER_SOURCE = 3;
+const MAX_EVENT_PAGES_PER_SOURCE = 50;
 const ROBOTS_CONCURRENCY = 4;
 const EVENT_PROCESS_CONCURRENCY = 2;
 const CF_MAX_RETRIES = 5;
 const CF_BASE_BACKOFF_MS = 1200;
 const CF_MAX_BACKOFF_MS = 20000;
 const GEOCODE_MIN_GAP_MS = 1100;
+const DEFAULT_EVENT_TIMEZONE = "Australia/Melbourne";
 
 const robotsCache = new Map<string, boolean>();
 let nextGeocodeAt = 0;
+const dateFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -407,10 +414,194 @@ function asStringOrNull(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+function normalizeDateToDdMmYyyy(input: string): string | null {
+  const raw = input.trim().replace(/\s+/g, " ");
+  const slashOrDash = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/;
+  const ymd = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/;
+
+  let day = 0;
+  let month = 0;
+  let year = 0;
+
+  let m = slashOrDash.exec(raw);
+  if (m) {
+    day = Number(m[1]);
+    month = Number(m[2]);
+    year = Number(m[3]);
+  } else {
+    m = ymd.exec(raw);
+    if (m) {
+      year = Number(m[1]);
+      month = Number(m[2]);
+      day = Number(m[3]);
+    } else {
+      const long = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/;
+      const short = /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/;
+      const months: Record<string, number> = {
+        jan: 1,
+        january: 1,
+        feb: 2,
+        february: 2,
+        mar: 3,
+        march: 3,
+        apr: 4,
+        april: 4,
+        may: 5,
+        jun: 6,
+        june: 6,
+        jul: 7,
+        july: 7,
+        aug: 8,
+        august: 8,
+        sep: 9,
+        sept: 9,
+        september: 9,
+        oct: 10,
+        october: 10,
+        nov: 11,
+        november: 11,
+        dec: 12,
+        december: 12,
+      };
+
+      const ml = long.exec(raw);
+      if (ml) {
+        month = months[(ml[1] || "").toLowerCase()] || 0;
+        day = Number(ml[2]);
+        year = Number(ml[3]);
+      } else {
+        const ms = short.exec(raw);
+        if (ms) {
+          day = Number(ms[1]);
+          month = months[(ms[2] || "").toLowerCase()] || 0;
+          year = Number(ms[3]);
+        }
+      }
+    }
+  }
+
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const utcCheck = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utcCheck.getUTCFullYear() !== year ||
+    utcCheck.getUTCMonth() + 1 !== month ||
+    utcCheck.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${year}`;
+}
+
+function normalizeTimeTo24Hour(input: string): string | null {
+  const raw = input.trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === "all day" || raw === "tba" || raw === "to be announced") return "00:00";
+
+  const ampm = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i.exec(raw.replace(/\./g, ""));
+  if (ampm) {
+    let hour = Number(ampm[1]);
+    const minute = Number(ampm[2] || "0");
+    const marker = (ampm[3] || "").toLowerCase();
+    if (minute < 0 || minute > 59 || hour < 1 || hour > 12) return null;
+    if (marker === "pm" && hour !== 12) hour += 12;
+    if (marker === "am" && hour === 12) hour = 0;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  const twentyFour = /^(\d{1,2})[:.](\d{2})$/.exec(raw);
+  if (twentyFour) {
+    const hour = Number(twentyFour[1]);
+    const minute = Number(twentyFour[2]);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  const hourOnly = /^(\d{1,2})$/.exec(raw);
+  if (hourOnly) {
+    const hour = Number(hourOnly[1]);
+    if (hour < 0 || hour > 23) return null;
+    return `${String(hour).padStart(2, "0")}:00`;
+  }
+
+  return null;
+}
+
+function formatterForTimeZone(timeZone: string): Intl.DateTimeFormat {
+  const cached = dateFormatterCache.get(timeZone);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  dateFormatterCache.set(timeZone, formatter);
+  return formatter;
+}
+
+function offsetForTimeZone(utcMs: number, timeZone: string): number {
+  const parts = formatterForTimeZone(timeZone).formatToParts(new Date(utcMs));
+  const values: Record<string, number> = {};
+  for (const p of parts) {
+    if (p.type === "literal") continue;
+    values[p.type] = Number(p.value);
+  }
+  const asIfUtc = Date.UTC(
+    values.year ?? 0,
+    (values.month ?? 1) - 1,
+    values.day ?? 1,
+    values.hour ?? 0,
+    values.minute ?? 0,
+    values.second ?? 0
+  );
+  return asIfUtc - utcMs;
+}
+
+function zonedDateTimeToEpochMs(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string
+): number {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const offsetFirst = offsetForTimeZone(utcGuess, timeZone);
+  let resolved = utcGuess - offsetFirst;
+  const offsetSecond = offsetForTimeZone(resolved, timeZone);
+  if (offsetSecond !== offsetFirst) {
+    resolved = utcGuess - offsetSecond;
+  }
+  return resolved;
+}
+
+function buildEventDateTime(dateText: string, timeText: string): { dateDdMmYyyy: string; time24: string; epochMs: number; iso: string } | null {
+  const dateDdMmYyyy = normalizeDateToDdMmYyyy(dateText);
+  const time24 = normalizeTimeTo24Hour(timeText);
+  if (!dateDdMmYyyy || !time24) return null;
+
+  const [dd, mm, yyyy] = dateDdMmYyyy.split("/").map(Number);
+  const [hour, minute] = time24.split(":").map(Number);
+  if (!dd || !mm || !yyyy || Number.isNaN(hour) || Number.isNaN(minute)) return null;
+
+  const epochMs = zonedDateTimeToEpochMs(yyyy, mm, dd, hour, minute, DEFAULT_EVENT_TIMEZONE);
+  return {
+    dateDdMmYyyy,
+    time24,
+    epochMs,
+    iso: new Date(epochMs).toISOString(),
+  };
+}
+
 async function parseEventPdfWithGemini(pdfBytes: Uint8Array, sourceUrl: string, env: ResolvedEnv): Promise<ParsedEvent> {
   const prompt =
     "Extract event details from this PDF and return JSON only (no markdown) with keys: " +
     '{"event_name":string|null,"description":string|null,"date":string|null,"time":string|null,"location":string|null,"venue":string|null,"category":string|null,"tags":string[]|null,"image_url":string|null,"source_url":string}. ' +
+    "Use date format strictly DD/MM/YYYY and time as 24-hour HH:mm when possible. " +
     `Set source_url="${sourceUrl}".`;
 
   const res = await fetch(`${GEMINI_URL}?key=${env.geminiKey}`, {
@@ -559,15 +750,23 @@ function normalizeCategory(category: string | null): string | null {
   return ["music", "food", "fitness", "social", "arts"].includes(c) ? c : null;
 }
 
-function normalizeEvent(parsed: ParsedEvent, sourceUrl: string, htmlImageUrl: string | null, geocode: GeocodeResult): NormalizedEvent {
+function normalizeEvent(
+  parsed: ParsedEvent,
+  sourceUrl: string,
+  htmlImageUrl: string | null,
+  geocode: GeocodeResult,
+  dateTime: { dateDdMmYyyy: string; time24: string; epochMs: number; iso: string }
+): NormalizedEvent {
   const title = parsed.event_name?.trim() || "Untitled Event";
   const sourceHost = new URL(sourceUrl).hostname;
-  const date = parsed.date!.trim();
-  const time = parsed.time!.trim();
+  const date = dateTime.dateDdMmYyyy;
+  const time = dateTime.time24;
   return {
     title,
     venue: parsed.venue,
     timeLabel: `${date} ${time}`.trim(),
+    startAtIso: dateTime.iso,
+    startEpochMs: dateTime.epochMs,
     description: parsed.description,
     sourceUrl,
     source: sourceHost,
@@ -586,6 +785,7 @@ function toSupabaseRow(event: NormalizedEvent): SupabaseEventRow {
     title: event.title,
     venue: event.venue,
     time_label: event.timeLabel,
+    start_at: event.startAtIso,
     description: event.description,
     source_url: event.sourceUrl,
     source: event.source,
@@ -598,7 +798,28 @@ function toSupabaseRow(event: NormalizedEvent): SupabaseEventRow {
   };
 }
 
-async function insertEventRow(row: SupabaseEventRow, env: ResolvedEnv): Promise<void> {
+async function eventAlreadyExists(sourceUrl: string, env: ResolvedEnv): Promise<boolean> {
+  const query = new URLSearchParams({
+    select: "id",
+    source_url: `eq.${sourceUrl}`,
+    limit: "1",
+  });
+  const res = await fetch(`${env.supabaseUrl}/rest/v1/events?${query.toString()}`, {
+    headers: {
+      apikey: env.supabaseServiceRoleKey,
+      Authorization: `Bearer ${env.supabaseServiceRoleKey}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Supabase exists-check failed ${res.status}: ${clip(text, 400)}`);
+  }
+  const rows = (await res.json()) as Array<{ id: string }>;
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+async function insertEventRow(row: SupabaseEventRow, env: ResolvedEnv): Promise<boolean> {
+  if (await eventAlreadyExists(row.source_url, env)) return false;
   const res = await fetch(`${env.supabaseUrl}/rest/v1/events`, {
     method: "POST",
     headers: {
@@ -613,6 +834,48 @@ async function insertEventRow(row: SupabaseEventRow, env: ResolvedEnv): Promise<
     const text = await res.text();
     throw new Error(`Supabase insert failed ${res.status}: ${clip(text, 400)}`);
   }
+  return true;
+}
+
+async function cleanupExpiredEvents(env: ResolvedEnv, progress: ProgressEntry[]): Promise<number> {
+  const now = new Date().toISOString();
+  pushProgress(progress, {
+    stage: "events.cleanup",
+    status: "info",
+    message: `Deleting events older than ${now}`,
+  });
+
+  const deleteUrl = `${env.supabaseUrl}/rest/v1/events?start_at=lt.${encodeURIComponent(now)}`;
+  const res = await fetch(deleteUrl, {
+    method: "DELETE",
+    headers: {
+      apikey: env.supabaseServiceRoleKey,
+      Authorization: `Bearer ${env.supabaseServiceRoleKey}`,
+      Prefer: "return=representation",
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    if (text.includes("start_at")) {
+      pushProgress(progress, {
+        stage: "events.cleanup",
+        status: "warn",
+        message: "Skipping expired-events cleanup because start_at is not available in Supabase schema",
+      });
+      return 0;
+    }
+    throw new Error(`Supabase cleanup failed ${res.status}: ${clip(text, 400)}`);
+  }
+
+  const rows = (await res.json()) as unknown[];
+  const count = Array.isArray(rows) ? rows.length : 0;
+  pushProgress(progress, {
+    stage: "events.cleanup",
+    status: "ok",
+    message: `Deleted ${count} expired event(s)`,
+    meta: { deleted: count },
+  });
+  return count;
 }
 
 async function processEventPage(
@@ -654,6 +917,21 @@ async function processEventPage(
       };
     }
 
+    const dateTime = buildEventDateTime(parsed.date, parsed.time);
+    if (!dateTime) {
+      return {
+        event: null,
+        invalid: {
+          sourceUrl,
+          eventUrl,
+          reason: "invalid_date_or_time",
+          locationRaw: parsed.location,
+          parsed,
+        },
+        error: `Invalid event: expected DD/MM/YYYY and parseable time, got date="${parsed.date}" time="${parsed.time}"`,
+      };
+    }
+
     pushProgress(progress, { stage: "event.geocode", status: "info", sourceUrl, eventUrl, message: `Geocoding location: ${clip(parsed.location, 110)}` });
     const geocode = await geocodeToLatLng(parsed.location);
     if (!geocode) {
@@ -670,15 +948,19 @@ async function processEventPage(
       };
     }
 
-    const normalized = normalizeEvent(parsed, eventUrl, htmlImage, geocode);
+    const normalized = normalizeEvent(parsed, eventUrl, htmlImage, geocode, dateTime);
     pushProgress(progress, { stage: "event.validate", status: "ok", sourceUrl, eventUrl, message: "Event normalized and valid" });
 
     // IMPORTANT: insert each valid event immediately (not at the end).
     pushProgress(progress, { stage: "events.insert", status: "info", sourceUrl, eventUrl, message: "Inserting valid event into Supabase" });
-    await insertEventRow(toSupabaseRow(normalized), env);
-    pushProgress(progress, { stage: "events.insert", status: "ok", sourceUrl, eventUrl, message: "Inserted event row" });
+    const inserted = await insertEventRow(toSupabaseRow(normalized), env);
+    if (inserted) {
+      pushProgress(progress, { stage: "events.insert", status: "ok", sourceUrl, eventUrl, message: "Inserted event row" });
+    } else {
+      pushProgress(progress, { stage: "events.insert", status: "warn", sourceUrl, eventUrl, message: "Skipped insert: event already exists" });
+    }
 
-    return { event: normalized, inserted: true };
+    return { event: normalized, inserted };
   } catch (err) {
     return { event: null, error: String(err) };
   }
@@ -693,12 +975,14 @@ async function runPipeline(envInput: Env): Promise<PipelineResult> {
   const invalidEvents: InvalidEventDebug[] = [];
   const events: NormalizedEvent[] = [];
   let insertedCount = 0;
+  let cleanedExpiredCount = 0;
 
   pushProgress(progress, {
     stage: "init",
     status: "info",
     message: `Starting run with ${urls.length} source URL(s) from urls.json`,
   });
+  cleanedExpiredCount = await cleanupExpiredEvents(env, progress);
 
   for (const sourceUrl of urls) {
     try {
@@ -744,6 +1028,7 @@ async function runPipeline(envInput: Env): Promise<PipelineResult> {
       valid_events: events.length,
       invalid_events: invalidEvents.length,
       inserted: insertedCount,
+      cleaned_expired: cleanedExpiredCount,
       errors: errors.length,
       warnings: warnings.length,
     },
@@ -753,6 +1038,7 @@ async function runPipeline(envInput: Env): Promise<PipelineResult> {
     ok: errors.length === 0,
     count: events.length,
     insertedCount,
+    cleanedExpiredCount,
     events,
     invalidEvents,
     warning: invalidEvents.length > 0 ? `${invalidEvents.length} event(s) were rejected. See invalidEvents for details.` : null,
@@ -785,7 +1071,7 @@ export default {
     try {
       const result = await runPipeline(env);
       console.log(
-        `[scheduled] done count=${result.count} inserted=${result.insertedCount} invalid=${result.invalidEvents.length} errors=${result.errors.length}`
+        `[scheduled] done count=${result.count} inserted=${result.insertedCount} cleaned=${result.cleanedExpiredCount} invalid=${result.invalidEvents.length} errors=${result.errors.length}`
       );
     } catch (err) {
       console.error("[scheduled] failed:", String(err));
