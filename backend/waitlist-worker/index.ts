@@ -10,6 +10,36 @@ type WaitlistPayload = {
   intent?: string;
 };
 
+const LOGO_SVG = `<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 385.76 407.59">
+  <defs>
+    <style>
+      .cls-1 { fill: #facf3c; }
+      .cls-2 { fill: #fff; }
+      .cls-3 { fill: none; }
+    </style>
+  </defs>
+  <rect class="cls-1" width="385.76" height="385.76" rx="76.39" ry="76.39"/>
+  <path class="cls-2" d="M200.4,357.47l83.55-134.66c43.86-70.69-6.98-162.05-90.16-162.05h0c-83.19,0-134.02,91.36-90.16,162.05l83.55,134.66c3.05,4.91,10.2,4.91,13.24,0h0Z"/>
+  <circle class="cls-1" cx="193.79" cy="168.42" r="72.87"/>
+  <polygon class="cls-2" points="218.62 137.37 201.74 105.02 184.33 137.37 184.59 249 218.88 249 218.62 137.37"/>
+  <g>
+    <path class="cls-1" d="M201.95,157.89v82.93c17.1-1.78,32.41-9.1,43.84-20l-.77-79.41-43.07,16.49Z"/>
+    <path class="cls-3" d="M201.95,152.19l43.09-15.86.75,83.12c12.9-13.15,20.87-31.15,20.87-51.02,0-40.24-32.62-72.87-72.87-72.87s-72.87,32.62-72.87,72.87,32.62,72.87,72.87,72.87c2.76,0,5.48-.17,8.16-.47v-88.63Z"/>
+  </g>
+  <line class="cls-3" x1="183.89" y1="407.59" x2="73.68" y2="257.3"/>
+  <rect class="cls-2" x="138.24" y="160.48" width="41.13" height="106.72"/>
+  <polygon class="cls-2" points="241.19 150.44 209.35 162.4 209.35 248.9 242.03 248.9 241.19 150.44"/>
+  <g>
+    <path class="cls-3" d="M193.79,95.56c-40.24,0-72.87,32.62-72.87,72.87,0,26.37,14,49.46,34.98,62.25v-58.65h33.22v69.1c1.55.1,3.1.16,4.67.16,40.24,0,72.87-32.62,72.87-72.87s-32.62-72.87-72.87-72.87Z"/>
+    <path class="cls-1" d="M155.9,177.87v53.69c9.79,5.47,21.1,8.87,33.22,9.57v-63.26h-33.22Z"/>
+  </g>
+  <rect class="cls-2" x="162.32" y="184.35" width="20.12" height="65.41"/>
+  <rect class="cls-2" x="146.76" y="144.15" width="24.11" height="26.21"/>
+  <path class="cls-1" d="M219.97,236.42c14.69-5.45,27.08-15.35,35.39-27.99v-34.02h-35.39v62.01Z"/>
+  <path class="cls-2" d="M225.99,180.72h17.22c8.58,0,15.55,6.97,15.55,15.55v53.5h-32.77v-69.04h0Z"/>
+</svg>`;
+
 const PAGE_HTML = `<!doctype html>
 <html lang="en">
   <head>
@@ -17,6 +47,8 @@ const PAGE_HTML = `<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Happs Waitlist</title>
     <meta name="description" content="Join the Happs waitlist for spontaneous events around Monash and Melbourne." />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="shortcut icon" href="/favicon.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -448,6 +480,15 @@ async function insertWaitlistRow(payload: WaitlistPayload, request: Request, env
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    if (request.method === "GET" && (url.pathname === "/logo.svg" || url.pathname === "/favicon.ico")) {
+      return new Response(LOGO_SVG, {
+        headers: {
+          "content-type": "image/svg+xml; charset=utf-8",
+          "cache-control": "public, max-age=86400",
+        },
+      });
+    }
 
     if (request.method === "POST" && url.pathname === "/api/waitlist") {
       const payload = await parsePayload(request);
