@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { AuthGate } from "@/components/AuthGate";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
@@ -54,7 +55,12 @@ function ProfileAnalyticsInner() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-3xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-        <h1 className="text-2xl font-bold text-zinc-900">My Analytics</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-zinc-900">My Analytics</h1>
+          <Link href="/" className="text-sm text-zinc-700 underline">
+            Back to map
+          </Link>
+        </div>
         <p className="mt-1 text-sm text-zinc-600">Your recent event activity and category trends.</p>
 
         <div className="mt-4 grid gap-2 md:grid-cols-2">
