@@ -3,10 +3,16 @@ type = "javascript"
 main = "index.ts"
 compatibility_date = "2026-03-13"
 
+[triggers]
+crons = ["0 */2 * * *"]
+
 [vars]
-GEMINI_API_KEY = "api key here"
-SUPABASE_SERVICE_ROLE_KEY = " Service role"
-SUPABASE_URL = "https://wgyleywyxkbhbqldocif.supabase.co"
+GEMINI_API_KEY = ""
+CLOUDFLARE_ACCOUNT_ID = ""
+CLOUDFLARE_API_TOKEN = ""
+SUPABASE_SERVICE_ROLE_KEY = ""
+SUPABASE_URL = ""
+SUPABASE_PUBLISHABLE_KEY = ""
 
 [observability]
 [observability.logs]
