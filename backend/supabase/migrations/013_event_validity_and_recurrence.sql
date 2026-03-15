@@ -28,11 +28,7 @@ alter table public.events
       or (
         recurrence_weekdays is not null
         and cardinality(recurrence_weekdays) > 0
-        and not exists (
-          select 1
-          from unnest(recurrence_weekdays) as weekday_value
-          where weekday_value < 0 or weekday_value > 6
-        )
+        and recurrence_weekdays <@ array[0,1,2,3,4,5,6]::smallint[]
       )
     ) not valid,
   drop constraint if exists events_recurrence_weekdays_unused_check,
@@ -41,6 +37,38 @@ alter table public.events
   drop constraint if exists events_recurrence_until_check,
   add constraint events_recurrence_until_check
     check (recurrence_until is null or start_at is null or recurrence_until >= start_at) not valid;
+
+-- Normalize legacy rows so NOT VALID -> VALIDATE succeeds safely.
+-- Keep existing events rather than deleting them:
+-- - invalid end_at is cleared (becomes open-ended)
+-- - invalid recurrence payloads are downgraded to non-recurring
+-- - invalid recurrence_until is cleared
+update public.events
+set end_at = null
+where end_at is not null
+  and start_at is not null
+  and end_at <= start_at;
+
+update public.events
+set recurrence_cadence = 'none',
+    recurrence_weekdays = null
+where recurrence_cadence = 'weekly'
+  and (
+    recurrence_weekdays is null
+    or cardinality(recurrence_weekdays) = 0
+    or not (recurrence_weekdays <@ array[0,1,2,3,4,5,6]::smallint[])
+  );
+
+update public.events
+set recurrence_weekdays = null
+where recurrence_cadence <> 'weekly'
+  and recurrence_weekdays is not null;
+
+update public.events
+set recurrence_until = null
+where recurrence_until is not null
+  and start_at is not null
+  and recurrence_until < start_at;
 
 -- Validate constraints in a controlled low-traffic window.
 -- These validations can scan the table, but they avoid long ACCESS EXCLUSIVE locks.
