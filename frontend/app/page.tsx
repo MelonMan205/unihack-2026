@@ -300,7 +300,7 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [radiusKm, setRadiusKm] = useState(DEFAULT_RADIUS_KM);
   const [isRadiusEnabled, setIsRadiusEnabled] = useState(false);
-  const [timeWindow, setTimeWindow] = useState<TimeWindow>("1d");
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>("any");
   const [sportsFilter, setSportsFilter] = useState<SportsFilter>("all");
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("all");
   const [subcategoryFilter, setSubcategoryFilter] = useState("all");
