@@ -157,6 +157,21 @@ function fallbackLocation(index: number): [number, number] {
   return [DEFAULT_LOCATION[0] + latJitter, DEFAULT_LOCATION[1] + lngJitter];
 }
 
+function normalizePhotoUrl(value: string | null): string {
+  if (!value) return EVENT_PHOTO_FALLBACK;
+  const candidate = value.trim();
+  if (!candidate) return EVENT_PHOTO_FALLBACK;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return EVENT_PHOTO_FALLBACK;
+    }
+    return candidate;
+  } catch {
+    return EVENT_PHOTO_FALLBACK;
+  }
+}
+
 function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
   const forecastLabel = normalizeForecastLabel(row.event_crowd_forecasts?.forecast_label);
   return {
@@ -167,7 +182,7 @@ function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
     description: row.description ?? "",
     startAtIso: row.start_at ?? undefined,
     sourceUrl: row.source_url ?? undefined,
-    photoUrl: row.photo_url ?? EVENT_PHOTO_FALLBACK,
+    photoUrl: normalizePhotoUrl(row.photo_url),
     location: parseLocation(row.location) ?? fallbackLocation(index),
     category: normalizeCategory(row.category),
     spontaneityScore: row.spontaneity_score ?? 70,
