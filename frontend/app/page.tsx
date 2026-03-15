@@ -15,7 +15,6 @@ import {
 import {
   Crosshair,
   ExternalLink,
-  LayoutDashboard,
   MapPin,
   Search,
   Sparkles,
@@ -74,6 +73,33 @@ type GoingAttendanceRow = {
   visibility: string;
   updated_at: string;
   events: GoingEventJoinRow | GoingEventJoinRow[] | null;
+};
+
+type DashboardProfileRow = {
+  display_name: string | null;
+  username: string | null;
+  interests: string[] | null;
+};
+
+type DashboardFriendRow = {
+  id: string;
+  status: string;
+  is_incoming: boolean;
+  other_user_id: string;
+  other_username: string | null;
+  other_display_name: string | null;
+  is_close_friend: boolean;
+};
+
+type DashboardSavedRow = {
+  event_id: string;
+  events: {
+    id: string;
+    title: string;
+    venue: string | null;
+    source_url: string | null;
+    time_label: string | null;
+  } | null;
 };
 
 const DEFAULT_RADIUS_KM = 1;
@@ -285,6 +311,9 @@ export default function HomePage() {
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [userRoles, setUserRoles] = useState<string[]>([]);
   const [userInterests, setUserInterests] = useState<string[]>([]);
+  const [dashboardProfile, setDashboardProfile] = useState<DashboardProfileRow | null>(null);
+  const [dashboardFriends, setDashboardFriends] = useState<DashboardFriendRow[]>([]);
+  const [dashboardSaved, setDashboardSaved] = useState<DashboardSavedRow[]>([]);
   const [attendanceByEventId, setAttendanceByEventId] = useState<Record<string, string>>({});
   const [attendanceVisibilityByEventId, setAttendanceVisibilityByEventId] = useState<Record<string, string>>({});
   const [friendAttendanceByEventId, setFriendAttendanceByEventId] = useState<
@@ -382,14 +411,41 @@ export default function HomePage() {
 
   useEffect(() => {
     const client = getSupabaseBrowserClient();
-    if (!client || !authUserId) return;
+    if (!client || !authUserId) {
+      setDashboardProfile(null);
+      setDashboardFriends([]);
+      setDashboardSaved([]);
+      return;
+    }
     client
       .from("profiles")
-      .select("interests")
+      .select("display_name,username,interests")
       .eq("id", authUserId)
       .maybeSingle()
       .then(({ data }) => {
-        setUserInterests(Array.isArray(data?.interests) ? data.interests : []);
+        const interests = Array.isArray(data?.interests) ? data.interests : [];
+        setUserInterests(interests);
+        setDashboardProfile({
+          display_name: data?.display_name ?? null,
+          username: data?.username ?? null,
+          interests,
+        });
+      });
+
+    client
+      .rpc("app_list_friendships", { max_results: 120 })
+      .then(({ data }) => {
+        const accepted = ((data ?? []) as DashboardFriendRow[]).filter((row) => row.status === "accepted");
+        setDashboardFriends(accepted);
+      });
+
+    client
+      .from("saved_event_items")
+      .select("event_id,events(id,title,venue,source_url,time_label)")
+      .eq("user_id", authUserId)
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        setDashboardSaved((data as DashboardSavedRow[] | null) ?? []);
       });
   }, [authUserId]);
 
@@ -759,6 +815,7 @@ export default function HomePage() {
       }),
     [goingEvents, events],
   );
+  const dashboardName = dashboardProfile?.display_name?.trim() || dashboardProfile?.username?.trim() || "friend";
 
   const onMapViewportChange = useCallback(
     (nextViewport: Viewport) => {
@@ -859,6 +916,55 @@ export default function HomePage() {
 
   return (
     <main className="relative h-[100dvh] min-h-[100svh] w-full overflow-hidden bg-[#eef1f5] text-zinc-900">
+      <div className="pointer-events-none absolute inset-x-0 top-4 z-[1300] flex justify-center px-3">
+        <Card className="glass-panel pointer-events-auto rounded-full border-white/40">
+          <CardContent className="flex items-center gap-1 p-1">
+            <Button
+              type="button"
+              variant={viewMode === "map" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setViewMode("map")}
+              className={`icon-filter-btn h-8 rounded-full px-3 text-xs sm:px-4 ${
+                viewMode === "map" ? "icon-filter-btn--active" : ""
+              }`}
+            >
+              map
+            </Button>
+            <Button
+              type="button"
+              variant={viewMode === "dashboard" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setViewMode("dashboard")}
+              className={`icon-filter-btn h-8 rounded-full px-3 text-xs sm:px-4 ${
+                viewMode === "dashboard" ? "icon-filter-btn--active" : ""
+              }`}
+            >
+              dashboard
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+      <div
+        className={`pointer-events-none absolute inset-x-0 top-[3.6rem] z-[1250] flex justify-center px-3 transition-all duration-300 ${
+          viewMode === "dashboard" ? "opacity-100" : "pointer-events-none -translate-y-2 opacity-0"
+        }`}
+      >
+        <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5">
+          {authUserId ? (
+            <>
+              <Link href="/profile/settings" className="icon-filter-btn rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-[11px] text-zinc-700">
+                profile
+              </Link>
+              <Link href="/friends" className="icon-filter-btn rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-[11px] text-zinc-700">
+                friends
+              </Link>
+              <Link href="/saved" className="icon-filter-btn rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-[11px] text-zinc-700">
+                saved
+              </Link>
+            </>
+          ) : null}
+        </div>
+      </div>
       {viewMode === "map" ? (
         isLocationReady ? (
           <MapView
@@ -883,82 +989,101 @@ export default function HomePage() {
           <div className="h-[100dvh] min-h-[100svh] w-full bg-[#f8f3e8]" />
         )
       ) : (
-        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-44 pt-6">
-          <div className="mx-auto grid w-full max-w-5xl gap-4 px-3 sm:px-4 lg:grid-cols-[1.25fr_1fr]">
-            <Card className="glass-panel border-white/45">
-              <CardContent className="space-y-4 p-4 sm:p-5">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">Dashboard</p>
-                  <h2 className="mt-1 text-xl font-semibold text-zinc-900">Going Events</h2>
-                  <p className="text-sm text-zinc-600">All events you have marked as going or checked in.</p>
+        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-44 pt-20">
+          <div className="mx-auto grid w-full max-w-6xl gap-4 px-3 sm:px-4 lg:grid-cols-12">
+            <Card className="glass-panel border-white/45 lg:col-span-12">
+              <CardContent className="space-y-3 p-4 sm:p-5">
+                <p className="text-xs font-semibold tracking-[0.1em] text-zinc-500">profile</p>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-xl font-semibold text-zinc-900">{dashboardName}</h2>
+                  <Link
+                    href="/profile/settings"
+                    className="icon-filter-btn icon-filter-btn--active rounded-full border border-zinc-300 bg-white px-3 py-1 text-xs text-zinc-900"
+                  >
+                    edit profile
+                  </Link>
                 </div>
-                <div className="space-y-2">
-                  {dashboardGoingEvents.map((eventRow) => (
-                    <article key={eventRow.eventId} className="rounded-xl border border-zinc-200/80 bg-white/80 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="font-semibold text-zinc-900">{eventRow.title}</p>
-                        <Badge variant="secondary" className="bg-white/70 text-zinc-700">
-                          {eventRow.status === "checked_in" ? "Checked in" : "Going"}
-                        </Badge>
-                      </div>
-                      <p className="mt-1 text-sm text-zinc-600">
-                        {eventRow.venue} | {eventRow.timeLabel}
-                      </p>
-                      {eventRow.tags.length > 0 ? (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {eventRow.tags.slice(0, 4).map((tag) => (
-                            <Badge key={`${eventRow.eventId}-${tag}`} variant="outline">
-                              {tag}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : null}
-                      {eventRow.sourceUrl ? (
-                        <a
-                          href={eventRow.sourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-2 inline-flex text-xs text-zinc-700 underline"
-                        >
-                          Open event link
-                        </a>
-                      ) : null}
-                    </article>
+                <p className="text-sm text-zinc-600">@{dashboardProfile?.username?.trim() || "no-username"}</p>
+                <div className="flex flex-wrap gap-2">
+                  {(dashboardProfile?.interests ?? []).slice(0, 10).map((interest) => (
+                    <Badge key={interest} className="bg-yellow-300 text-zinc-900">
+                      {interest.toLowerCase()}
+                    </Badge>
                   ))}
-                  {dashboardGoingEvents.length === 0 ? (
-                    <p className="text-sm text-zinc-600">
-                      No going events yet. Open Map view and mark events as going to populate this list.
-                    </p>
+                  {(dashboardProfile?.interests ?? []).length === 0 ? (
+                    <p className="text-xs text-zinc-600">no interests set yet</p>
                   ) : null}
                 </div>
               </CardContent>
             </Card>
-            <Card className="glass-panel border-white/45">
-              <CardContent className="space-y-4 p-4 sm:p-5">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">Discovery Snapshot</p>
-                  <h2 className="mt-1 text-xl font-semibold text-zinc-900">Filtered feed</h2>
-                  <p className="text-sm text-zinc-600">
-                    {filteredEvents.length} events match your active category, tag, and metadata filters.
-                  </p>
+
+            <Card className="glass-panel border-white/45 lg:col-span-6">
+              <CardContent className="space-y-3 p-4 sm:p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold tracking-[0.1em] text-zinc-500">friends</p>
+                  <Link href="/friends" className="icon-filter-btn rounded-full border border-zinc-300 bg-white/80 px-3 py-1 text-xs text-zinc-700">
+                    manage
+                  </Link>
                 </div>
                 <div className="space-y-2">
-                  {filteredEvents.slice(0, 8).map((eventRow) => (
-                    <button
-                      type="button"
-                      key={eventRow.id}
-                      onClick={() => setSelectedEvent(eventRow)}
-                      className="w-full rounded-xl border border-zinc-200/80 bg-white/80 p-3 text-left hover:border-zinc-300"
-                    >
-                      <p className="font-medium text-zinc-900">{eventRow.title}</p>
-                      <p className="text-sm text-zinc-600">
-                        {eventRow.venue} | {eventRow.timeLabel}
-                      </p>
-                    </button>
+                  {dashboardFriends.slice(0, 6).map((friend) => (
+                    <div key={friend.id} className="flex items-center justify-between rounded-xl border border-zinc-200/80 bg-white/80 p-3">
+                      <div>
+                        <p className="text-sm font-medium text-zinc-900">
+                          {(friend.other_display_name?.trim() || friend.other_username?.trim() || "friend").toLowerCase()}
+                        </p>
+                        <p className="text-xs text-zinc-600">@{(friend.other_username?.trim() || "unknown").toLowerCase()}</p>
+                      </div>
+                      {friend.is_close_friend ? <Badge className="bg-yellow-300 text-zinc-900">close</Badge> : null}
+                    </div>
                   ))}
-                  {filteredEvents.length === 0 ? (
-                    <p className="text-sm text-zinc-600">No events match this filter set. Adjust tags or metadata filters.</p>
-                  ) : null}
+                  {dashboardFriends.length === 0 ? <p className="text-sm text-zinc-600">no friends yet</p> : null}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="glass-panel border-white/45 lg:col-span-6">
+              <CardContent className="space-y-3 p-4 sm:p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold tracking-[0.1em] text-zinc-500">going</p>
+                  <Badge className="bg-yellow-300 text-zinc-900">{dashboardGoingEvents.length}</Badge>
+                </div>
+                <div className="space-y-2">
+                  {dashboardGoingEvents.slice(0, 6).map((eventRow) => (
+                    <article key={eventRow.eventId} className="rounded-xl border border-zinc-200/80 bg-white/80 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-zinc-900">{eventRow.title.toLowerCase()}</p>
+                        <Badge className="bg-yellow-300 text-zinc-900">
+                          {eventRow.status === "checked_in" ? "checked in" : "going"}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-600">
+                        {(eventRow.venue || "venue tba").toLowerCase()} | {(eventRow.timeLabel || "time tba").toLowerCase()}
+                      </p>
+                    </article>
+                  ))}
+                  {dashboardGoingEvents.length === 0 ? <p className="text-sm text-zinc-600">no going events yet</p> : null}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="glass-panel border-white/45 lg:col-span-12">
+              <CardContent className="space-y-3 p-4 sm:p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold tracking-[0.1em] text-zinc-500">saved</p>
+                  <Link href="/saved" className="icon-filter-btn rounded-full border border-zinc-300 bg-white/80 px-3 py-1 text-xs text-zinc-700">
+                    open saved page
+                  </Link>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {dashboardSaved.slice(0, 9).map((savedRow) => (
+                    <article key={savedRow.event_id} className="rounded-xl border border-zinc-200/80 bg-white/80 p-3">
+                      <p className="text-sm font-semibold text-zinc-900">{(savedRow.events?.title ?? "unknown event").toLowerCase()}</p>
+                      <p className="text-xs text-zinc-600">{(savedRow.events?.venue ?? "venue tba").toLowerCase()}</p>
+                      <p className="text-xs text-zinc-500">{(savedRow.events?.time_label ?? "time tba").toLowerCase()}</p>
+                    </article>
+                  ))}
+                  {dashboardSaved.length === 0 ? <p className="text-sm text-zinc-600">no saved events yet</p> : null}
                 </div>
               </CardContent>
             </Card>
@@ -966,7 +1091,11 @@ export default function HomePage() {
         </div>
       )}
 
-      <div className="pointer-events-none absolute left-4 top-1/2 z-[1200] hidden -translate-y-1/2 lg:block">
+      <div
+        className={`pointer-events-none absolute left-4 top-1/2 z-[1200] hidden -translate-y-1/2 transition-all duration-300 lg:block ${
+          viewMode === "map" ? "opacity-100 translate-x-0" : "pointer-events-none -translate-x-6 opacity-0"
+        }`}
+      >
         {filterPanel}
       </div>
 
@@ -984,12 +1113,18 @@ export default function HomePage() {
       </Sheet>
 
       <div
-        className={`pointer-events-none absolute inset-x-0 bottom-0 z-[1200] pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-all duration-200 sm:pb-4 ${
-          isEventSheetOpen ? "translate-y-6 opacity-0 sm:translate-y-0 sm:opacity-100" : "translate-y-0 opacity-100"
+        className={`pointer-events-none absolute inset-x-0 z-[1200] pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-all duration-300 sm:pb-4 ${
+          viewMode === "map" && isEventSheetOpen
+            ? "bottom-0 translate-y-6 opacity-0 sm:translate-y-0 sm:opacity-100"
+            : "bottom-0 translate-y-0 opacity-100"
         }`}
       >
         <div className="mx-auto w-full max-w-4xl px-3 sm:px-4">
-          <Card className="glass-panel discover-dock pointer-events-auto w-full border-white/30 animate-rise-delayed">
+          <Card
+            className={`glass-panel discover-dock pointer-events-auto w-full border-white/30 animate-rise-delayed transition-all duration-300 ${
+              viewMode === "dashboard" ? "border-yellow-300/70 bg-white/80 shadow-[0_20px_45px_rgba(250,204,21,0.22)]" : ""
+            }`}
+          >
             <CardContent className="flex flex-col gap-2.5 p-2.5 pt-3 sm:gap-3 sm:p-4 sm:pt-5">
               <div className="flex flex-col gap-2 pt-0.5 sm:flex-row sm:items-start sm:justify-between">
                 <div className="pointer-events-auto max-w-full overflow-x-auto no-scrollbar">
@@ -1020,97 +1155,97 @@ export default function HomePage() {
                     </p>
                   ) : (
                     <p className="inline-flex items-center gap-1 whitespace-nowrap text-[14px] font-semibold text-zinc-900 sm:text-[17px]">
-                      <LayoutDashboard className="h-4 w-4" />
+                      <span>{dashboardFriends.length}</span>
+                      <span>friends</span>
+                      <span className="mx-1">|</span>
                       <span>{dashboardGoingEvents.length}</span>
-                      <span>events you are going to</span>
+                      <span>going</span>
+                      <span className="mx-1">|</span>
+                      <span>{dashboardSaved.length}</span>
+                      <span>saved</span>
                     </p>
                   )}
                 </div>
 
                 <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
-                  <Button
-                    type="button"
-                    variant={viewMode === "map" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setViewMode("map")}
-                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      viewMode === "map" ? "icon-filter-btn--active" : ""
-                    }`}
-                  >
-                    map
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={viewMode === "dashboard" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setViewMode("dashboard")}
-                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      viewMode === "dashboard" ? "icon-filter-btn--active" : ""
-                    }`}
-                  >
-                    dashboard
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={locationMode === "current" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => {
-                      setLocationMode("current");
-                      syncCurrentLocation();
-                    }}
-                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      locationMode === "current" ? "icon-filter-btn--active" : ""
-                    }`}
-                    disabled={viewMode !== "map"}
-                  >
-                    <MapPin className="mr-1 h-3.5 w-3.5" />
-                    current
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={isRadiusEnabled ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => {
-                      setIsRadiusEnabled((current) => {
-                        const next = !current;
-                        if (!next) {
+                  {viewMode === "map" ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant={locationMode === "current" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => {
                           setLocationMode("current");
-                        }
-                        return next;
-                      });
-                    }}
-                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      isRadiusEnabled ? "icon-filter-btn--active" : ""
-                    }`}
-                    disabled={viewMode !== "map"}
-                  >
-                    radius {isRadiusEnabled ? "on" : "off"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={locationMode === "pick" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => {
-                      if (!isRadiusEnabled) return;
-                      setLocationMode("pick");
-                    }}
-                    disabled={!isRadiusEnabled}
-                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      locationMode === "pick" && isRadiusEnabled ? "icon-filter-btn--active" : ""
-                    }`}
-                  >
-                    <Crosshair className="mr-1 h-3.5 w-3.5" />
-                    pick
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setIsMobileFilterOpen(true)}
-                    className="icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs lg:hidden"
-                  >
-                    filters
-                  </Button>
+                          syncCurrentLocation();
+                        }}
+                        className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
+                          locationMode === "current" ? "icon-filter-btn--active" : ""
+                        }`}
+                      >
+                        <MapPin className="mr-1 h-3.5 w-3.5" />
+                        current
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={isRadiusEnabled ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => {
+                          setIsRadiusEnabled((current) => {
+                            const next = !current;
+                            if (!next) {
+                              setLocationMode("current");
+                            }
+                            return next;
+                          });
+                        }}
+                        className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
+                          isRadiusEnabled ? "icon-filter-btn--active" : ""
+                        }`}
+                      >
+                        radius {isRadiusEnabled ? "on" : "off"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={locationMode === "pick" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => {
+                          if (!isRadiusEnabled) return;
+                          setLocationMode("pick");
+                        }}
+                        disabled={!isRadiusEnabled}
+                        className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
+                          locationMode === "pick" && isRadiusEnabled ? "icon-filter-btn--active" : ""
+                        }`}
+                      >
+                        <Crosshair className="mr-1 h-3.5 w-3.5" />
+                        pick
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsMobileFilterOpen(true)}
+                        className="icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs lg:hidden"
+                      >
+                        filters
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Link
+                        href="/friends"
+                        className="icon-filter-btn icon-filter-btn--active rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900"
+                      >
+                        friends
+                      </Link>
+                      <Link
+                        href="/saved"
+                        className="icon-filter-btn icon-filter-btn--active rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900"
+                      >
+                        saved
+                      </Link>
+                    </>
+                  )}
                 </div>
               </div>
 
