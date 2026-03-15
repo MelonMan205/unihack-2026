@@ -31,9 +31,13 @@ type AdminEventRow = {
   time_label: string | null;
   category: string | null;
   source_url: string | null;
+  photo_url: string | null;
   location: string | null;
   start_at: string | null;
   end_at: string | null;
+  recurrence_cadence: "none" | "daily" | "weekly" | "monthly";
+  recurrence_weekdays: number[] | null;
+  recurrence_until: string | null;
   tags: string[] | null;
   is_hidden: boolean;
   created_by: string | null;
@@ -45,11 +49,25 @@ type EventDraft = {
   timeLabel: string;
   category: string;
   sourceUrl: string;
+  photoUrl: string;
   location: string;
   startAt: string;
   endAt: string;
+  recurrenceCadence: "none" | "daily" | "weekly" | "monthly";
+  recurrenceWeekdays: number[];
+  recurrenceUntil: string;
   tags: string;
 };
+
+const WEEKDAY_OPTIONS: Array<{ label: string; value: number }> = [
+  { label: "Sun", value: 0 },
+  { label: "Mon", value: 1 },
+  { label: "Tue", value: 2 },
+  { label: "Wed", value: 3 },
+  { label: "Thu", value: 4 },
+  { label: "Fri", value: 5 },
+  { label: "Sat", value: 6 },
+];
 
 function parseTags(rawTags: string): string[] {
   return rawTags
@@ -57,6 +75,25 @@ function parseTags(rawTags: string): string[] {
     .map((tag) => tag.trim())
     .filter(Boolean)
     .slice(0, 12);
+}
+
+function normalizeText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function validateEventDraft(draft: EventDraft): string | null {
+  if (!draft.title.trim()) return "Event title is required.";
+  if (!draft.startAt) return "Start time is required.";
+  if (draft.endAt && new Date(draft.endAt).getTime() <= new Date(draft.startAt).getTime()) {
+    return "End time must be after start time.";
+  }
+  if (draft.recurrenceCadence === "weekly" && draft.recurrenceWeekdays.length === 0) {
+    return "Select at least one weekday for weekly repeats.";
+  }
+  if (draft.recurrenceUntil && new Date(draft.recurrenceUntil).getTime() < new Date(draft.startAt).getTime()) {
+    return "Repeat-until date must be after the event start.";
+  }
+  return null;
 }
 
 function AdminInner() {
@@ -74,9 +111,13 @@ function AdminInner() {
     timeLabel: "",
     category: "social",
     sourceUrl: "",
+    photoUrl: "",
     location: "",
     startAt: "",
     endAt: "",
+    recurrenceCadence: "none",
+    recurrenceWeekdays: [],
+    recurrenceUntil: "",
     tags: "",
   });
 
@@ -99,7 +140,7 @@ function AdminInner() {
         .order("created_at", { ascending: true }),
       client
         .from("events")
-        .select("id,title,venue,time_label,category,source_url,location,start_at,end_at,tags,is_hidden,created_by")
+        .select("id,title,venue,time_label,category,source_url,photo_url,location,start_at,end_at,recurrence_cadence,recurrence_weekdays,recurrence_until,tags,is_hidden,created_by")
         .order("created_at", { ascending: false })
         .limit(150),
     ]);
@@ -163,26 +204,65 @@ function AdminInner() {
       timeLabel: eventRow.time_label ?? "",
       category: eventRow.category ?? "social",
       sourceUrl: eventRow.source_url ?? "",
+      photoUrl: eventRow.photo_url ?? "",
       location: eventRow.location ?? "",
       startAt: eventRow.start_at ? eventRow.start_at.slice(0, 16) : "",
       endAt: eventRow.end_at ? eventRow.end_at.slice(0, 16) : "",
+      recurrenceCadence: eventRow.recurrence_cadence ?? "none",
+      recurrenceWeekdays: eventRow.recurrence_weekdays ?? [],
+      recurrenceUntil: eventRow.recurrence_until ? eventRow.recurrence_until.slice(0, 16) : "",
       tags: (eventRow.tags ?? []).join(", "),
     });
   };
 
   const saveEventEdit = async (eventId: string) => {
     if (!client || !userId) return;
+    const validationError = validateEventDraft(eventDraft);
+    if (validationError) {
+      setMessage(validationError);
+      return;
+    }
+    const startAtIso = new Date(eventDraft.startAt).toISOString();
+    const endAtIso = eventDraft.endAt ? new Date(eventDraft.endAt).toISOString() : null;
+    const recurrenceUntilIso = eventDraft.recurrenceUntil ? new Date(eventDraft.recurrenceUntil).toISOString() : null;
+    const existingEvent = events.find((row) => row.id === eventId);
+    if (existingEvent?.created_by) {
+      const duplicateCheck = await client
+        .from("events")
+        .select("id,title,location,created_by")
+        .eq("created_by", existingEvent.created_by)
+        .eq("start_at", startAtIso)
+        .neq("id", eventId)
+        .limit(30);
+      if (duplicateCheck.error) {
+        setMessage(`Error: ${duplicateCheck.error.message}`);
+        return;
+      }
+      const duplicateFound = (duplicateCheck.data ?? []).some((row) => {
+        const rowTitle = normalizeText(row.title ?? "");
+        const rowLocation = normalizeText(row.location ?? "");
+        return rowTitle === normalizeText(eventDraft.title) && rowLocation === normalizeText(eventDraft.location);
+      });
+      if (duplicateFound) {
+        setMessage("Duplicate event detected for same title, location, and start time.");
+        return;
+      }
+    }
     const { error } = await client
       .from("events")
       .update({
-        title: eventDraft.title,
+        title: eventDraft.title.trim(),
         venue: eventDraft.venue || null,
         time_label: eventDraft.timeLabel || null,
         category: eventDraft.category,
         source_url: eventDraft.sourceUrl || null,
-        location: eventDraft.location || null,
-        start_at: eventDraft.startAt || null,
-        end_at: eventDraft.endAt || null,
+        photo_url: eventDraft.photoUrl || null,
+        location: eventDraft.location.trim() || null,
+        start_at: startAtIso,
+        end_at: endAtIso,
+        recurrence_cadence: eventDraft.recurrenceCadence,
+        recurrence_weekdays: eventDraft.recurrenceCadence === "weekly" ? eventDraft.recurrenceWeekdays : null,
+        recurrence_until: recurrenceUntilIso,
         tags: parseTags(eventDraft.tags),
       })
       .eq("id", eventId);
@@ -362,6 +442,12 @@ function AdminInner() {
                       className="rounded-xl border border-zinc-300 px-3 py-2"
                     />
                     <input
+                      value={eventDraft.photoUrl}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, photoUrl: event.target.value }))}
+                      placeholder="Image URL"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
                       value={eventDraft.location}
                       onChange={(event) => setEventDraft((current) => ({ ...current, location: event.target.value }))}
                       placeholder="Lat,Lng"
@@ -379,6 +465,49 @@ function AdminInner() {
                       onChange={(event) => setEventDraft((current) => ({ ...current, endAt: event.target.value }))}
                       className="rounded-xl border border-zinc-300 px-3 py-2"
                     />
+                    <select
+                      value={eventDraft.recurrenceCadence}
+                      onChange={(event) =>
+                        setEventDraft((current) => ({
+                          ...current,
+                          recurrenceCadence: event.target.value as EventDraft["recurrenceCadence"],
+                          recurrenceWeekdays: event.target.value === "weekly" ? current.recurrenceWeekdays : [],
+                        }))
+                      }
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    >
+                      <option value="none">Does not repeat</option>
+                      <option value="daily">Repeats daily</option>
+                      <option value="weekly">Repeats weekly</option>
+                      <option value="monthly">Repeats monthly</option>
+                    </select>
+                    <input
+                      type="datetime-local"
+                      value={eventDraft.recurrenceUntil}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, recurrenceUntil: event.target.value }))}
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    {eventDraft.recurrenceCadence === "weekly" ? (
+                      <div className="flex flex-wrap gap-2 rounded-xl border border-zinc-300 px-3 py-2 md:col-span-2">
+                        {WEEKDAY_OPTIONS.map((weekday) => (
+                          <label key={weekday.value} className="inline-flex items-center gap-1 text-xs text-zinc-700">
+                            <input
+                              type="checkbox"
+                              checked={eventDraft.recurrenceWeekdays.includes(weekday.value)}
+                              onChange={(event) =>
+                                setEventDraft((current) => ({
+                                  ...current,
+                                  recurrenceWeekdays: event.target.checked
+                                    ? [...current.recurrenceWeekdays, weekday.value].sort((a, b) => a - b)
+                                    : current.recurrenceWeekdays.filter((value) => value !== weekday.value),
+                                }))
+                              }
+                            />
+                            {weekday.label}
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
                     <input
                       value={eventDraft.tags}
                       onChange={(event) => setEventDraft((current) => ({ ...current, tags: event.target.value }))}

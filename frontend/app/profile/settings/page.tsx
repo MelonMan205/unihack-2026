@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { AuthGate } from "@/components/AuthGate";
 import {
@@ -29,6 +30,7 @@ function SettingsInner() {
   const client = getSupabaseBrowserClient();
   const [userId, setUserId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [bio, setBio] = useState("");
   const [privacyDefault, setPrivacyDefault] = useState("friends");
@@ -36,6 +38,7 @@ function SettingsInner() {
   const [interestInput, setInterestInput] = useState("");
   const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
   const [message, setMessage] = useState("");
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
   useEffect(() => {
     if (!client) return;
@@ -46,12 +49,13 @@ function SettingsInner() {
 
       const { data: profile } = await client
         .from("profiles")
-        .select("username,display_name,bio,privacy_default")
+        .select("username,display_name,bio,privacy_default,avatar_url")
         .eq("id", nextUserId)
         .maybeSingle();
       if (!profile) return;
 
       setUsername(profile.username ?? "");
+      setAvatarUrl(profile.avatar_url ?? "");
       setDisplayName(profile.display_name ?? "");
       setBio(profile.bio ?? "");
       setPrivacyDefault(profile.privacy_default ?? "friends");
@@ -108,6 +112,7 @@ function SettingsInner() {
       .from("profiles")
       .update({
         username: username || null,
+        avatar_url: avatarUrl || null,
         display_name: displayName || null,
         bio: bio || null,
         privacy_default: privacyDefault,
@@ -125,6 +130,25 @@ function SettingsInner() {
     setMessage("Profile updated.");
   };
 
+  const uploadAvatar = async (file: File) => {
+    if (!client || !userId) return;
+    setIsUploadingAvatar(true);
+    setMessage("");
+    const extension = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() : "jpg";
+    const filePath = `${userId}/${crypto.randomUUID()}.${extension || "jpg"}`;
+    const { error: uploadError } = await client.storage
+      .from("avatars")
+      .upload(filePath, file, { upsert: true, contentType: file.type || "image/jpeg" });
+    if (uploadError) {
+      setIsUploadingAvatar(false);
+      setMessage(`Error: ${uploadError.message}`);
+      return;
+    }
+    const { data } = client.storage.from("avatars").getPublicUrl(filePath);
+    setAvatarUrl(data.publicUrl);
+    setIsUploadingAvatar(false);
+  };
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-2xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -135,6 +159,31 @@ function SettingsInner() {
           </Link>
         </div>
         <form onSubmit={onSave} className="mt-4 space-y-3">
+          <label className="block text-sm text-zinc-700">
+            Profile image
+            <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2" />
+            <input
+              type="file"
+              accept="image/*"
+              className="mt-2 block w-full text-xs text-zinc-600 file:mr-3 file:rounded-lg file:border file:border-zinc-300 file:bg-white file:px-3 file:py-1.5"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                void uploadAvatar(file);
+              }}
+            />
+            {avatarUrl ? (
+              <Image
+                src={avatarUrl}
+                alt="Profile avatar"
+                width={64}
+                height={64}
+                unoptimized
+                className="mt-2 h-16 w-16 rounded-full border border-zinc-200 object-cover"
+              />
+            ) : null}
+            {isUploadingAvatar ? <span className="mt-1 block text-xs text-zinc-500">Uploading image...</span> : null}
+          </label>
           <label className="block text-sm text-zinc-700">
             Username
             <input value={username} onChange={(event) => setUsername(event.target.value)} className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2" />

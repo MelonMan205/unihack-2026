@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
@@ -9,6 +10,7 @@ type ProfileRow = {
   id: string;
   username: string | null;
   display_name: string | null;
+  avatar_url: string | null;
   bio: string | null;
   interests: string[] | null;
   attended_total_count: number;
@@ -24,7 +26,7 @@ function ProfilePublicInner({ username }: { username: string }) {
     if (!client) return;
     client
       .from("profiles")
-      .select("id,username,display_name,bio,interests,attended_total_count,attended_month_count")
+      .select("id,username,display_name,avatar_url,bio,interests,attended_total_count,attended_month_count")
       .eq("username", username)
       .maybeSingle()
       .then(({ data }) => {
@@ -44,7 +46,23 @@ function ProfilePublicInner({ username }: { username: string }) {
   return (
     <main className="mx-auto min-h-screen w-full max-w-3xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-        <h1 className="text-2xl font-bold text-zinc-900">{profile.display_name ?? profile.username}</h1>
+        <div className="flex items-center gap-3">
+          {profile.avatar_url ? (
+            <Image
+              src={profile.avatar_url}
+              alt="Profile avatar"
+              width={56}
+              height={56}
+              unoptimized
+              className="h-14 w-14 rounded-full border border-zinc-200 object-cover"
+            />
+          ) : (
+            <div className="grid h-14 w-14 place-items-center rounded-full border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-600">
+              {(profile.display_name ?? profile.username ?? "U").slice(0, 1).toUpperCase()}
+            </div>
+          )}
+          <h1 className="text-2xl font-bold text-zinc-900">{profile.display_name ?? profile.username}</h1>
+        </div>
         <p className="mt-2 text-sm text-zinc-600">{profile.bio?.trim() || "No bio yet."}</p>
         <div className="mt-4 flex flex-wrap gap-2">
           {(profile.interests ?? []).map((interest) => (

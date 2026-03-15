@@ -10,8 +10,9 @@ const appFont = Space_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Spontaneous Events Map",
-  description: "Discover spontaneous events near you tonight.",
+  title: "Happs",
+  description: "Happs helps you discover spontaneous events near you tonight.",
+  manifest: "/manifest.webmanifest",
   icons: {
     icon: "/haps-logo.svg",
     shortcut: "/haps-logo.svg",

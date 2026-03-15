@@ -13,9 +13,13 @@ type EventRow = {
   time_label: string | null;
   category: string | null;
   source_url: string | null;
+  photo_url: string | null;
   location: string | null;
   start_at: string | null;
   end_at: string | null;
+  recurrence_cadence: "none" | "daily" | "weekly" | "monthly";
+  recurrence_weekdays: number[] | null;
+  recurrence_until: string | null;
   tags: string[] | null;
 };
 
@@ -33,11 +37,25 @@ type EventDraft = {
   timeLabel: string;
   category: string;
   sourceUrl: string;
+  photoUrl: string;
   location: string;
   startAt: string;
   endAt: string;
+  recurrenceCadence: "none" | "daily" | "weekly" | "monthly";
+  recurrenceWeekdays: number[];
+  recurrenceUntil: string;
   tags: string;
 };
+
+const WEEKDAY_OPTIONS: Array<{ label: string; value: number }> = [
+  { label: "Sun", value: 0 },
+  { label: "Mon", value: 1 },
+  { label: "Tue", value: 2 },
+  { label: "Wed", value: 3 },
+  { label: "Thu", value: 4 },
+  { label: "Fri", value: 5 },
+  { label: "Sat", value: 6 },
+];
 
 function parseTags(rawTags: string): string[] {
   return rawTags
@@ -45,6 +63,25 @@ function parseTags(rawTags: string): string[] {
     .map((tag) => tag.trim())
     .filter(Boolean)
     .slice(0, 12);
+}
+
+function normalizeText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function validateEventDraft(draft: EventDraft): string | null {
+  if (!draft.title.trim()) return "Event title is required.";
+  if (!draft.startAt) return "Start time is required.";
+  if (draft.endAt && new Date(draft.endAt).getTime() <= new Date(draft.startAt).getTime()) {
+    return "End time must be after start time.";
+  }
+  if (draft.recurrenceCadence === "weekly" && draft.recurrenceWeekdays.length === 0) {
+    return "Select at least one weekday for weekly repeats.";
+  }
+  if (draft.recurrenceUntil && new Date(draft.recurrenceUntil).getTime() < new Date(draft.startAt).getTime()) {
+    return "Repeat-until date must be after the event start.";
+  }
+  return null;
 }
 
 function OrganizerInner() {
@@ -63,9 +100,13 @@ function OrganizerInner() {
     timeLabel: "",
     category: "social",
     sourceUrl: "",
+    photoUrl: "",
     location: "-37.8136,144.9631",
     startAt: "",
     endAt: "",
+    recurrenceCadence: "none",
+    recurrenceWeekdays: [],
+    recurrenceUntil: "",
     tags: "",
   });
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
@@ -75,9 +116,13 @@ function OrganizerInner() {
     timeLabel: "",
     category: "social",
     sourceUrl: "",
+    photoUrl: "",
     location: "-37.8136,144.9631",
     startAt: "",
     endAt: "",
+    recurrenceCadence: "none",
+    recurrenceWeekdays: [],
+    recurrenceUntil: "",
     tags: "",
   });
 
@@ -89,7 +134,7 @@ function OrganizerInner() {
 
     const { data: eventData } = await client
       .from("events")
-      .select("id,title,venue,time_label,category,source_url,location,start_at,end_at,tags")
+      .select("id,title,venue,time_label,category,source_url,photo_url,location,start_at,end_at,recurrence_cadence,recurrence_weekdays,recurrence_until,tags")
       .eq("created_by", uid)
       .order("created_at", { ascending: false });
     setEvents((eventData as EventRow[] | null) ?? []);
@@ -131,16 +176,47 @@ function OrganizerInner() {
   const createEvent = async (event: FormEvent) => {
     event.preventDefault();
     if (!client || !userId) return;
+    const validationError = validateEventDraft(newEvent);
+    if (validationError) {
+      setMessage(validationError);
+      return;
+    }
+    const startAtIso = new Date(newEvent.startAt).toISOString();
+    const endAtIso = newEvent.endAt ? new Date(newEvent.endAt).toISOString() : null;
+    const recurrenceUntilIso = newEvent.recurrenceUntil ? new Date(newEvent.recurrenceUntil).toISOString() : null;
+    const duplicateCheck = await client
+      .from("events")
+      .select("id,title,location")
+      .eq("created_by", userId)
+      .eq("start_at", startAtIso)
+      .limit(30);
+    if (duplicateCheck.error) {
+      setMessage(`Error: ${duplicateCheck.error.message}`);
+      return;
+    }
+    const duplicateFound = (duplicateCheck.data ?? []).some((row) => {
+      const rowTitle = normalizeText(row.title ?? "");
+      const rowLocation = normalizeText(row.location ?? "");
+      return rowTitle === normalizeText(newEvent.title) && rowLocation === normalizeText(newEvent.location);
+    });
+    if (duplicateFound) {
+      setMessage("Duplicate event detected for same title, location, and start time.");
+      return;
+    }
     const { error } = await client.from("events").insert({
       created_by: userId,
-      title: newEvent.title,
+      title: newEvent.title.trim(),
       venue: newEvent.venue || null,
       time_label: newEvent.timeLabel || null,
       category: newEvent.category,
       source_url: newEvent.sourceUrl || `https://haps.app/events/${crypto.randomUUID()}`,
-      location: newEvent.location,
-      start_at: newEvent.startAt || null,
-      end_at: newEvent.endAt || null,
+      photo_url: newEvent.photoUrl || null,
+      location: newEvent.location.trim(),
+      start_at: startAtIso,
+      end_at: endAtIso,
+      recurrence_cadence: newEvent.recurrenceCadence,
+      recurrence_weekdays: newEvent.recurrenceCadence === "weekly" ? newEvent.recurrenceWeekdays : null,
+      recurrence_until: recurrenceUntilIso,
       spontaneity_score: 70,
       crowd_label: "moderate",
       tags: parseTags(newEvent.tags),
@@ -156,9 +232,13 @@ function OrganizerInner() {
       timeLabel: "",
       category: "social",
       sourceUrl: "",
+      photoUrl: "",
       location: "-37.8136,144.9631",
       startAt: "",
       endAt: "",
+      recurrenceCadence: "none",
+      recurrenceWeekdays: [],
+      recurrenceUntil: "",
       tags: "",
     });
     await loadData(userId);
@@ -172,26 +252,62 @@ function OrganizerInner() {
       timeLabel: eventRow.time_label ?? "",
       category: eventRow.category ?? "social",
       sourceUrl: eventRow.source_url ?? "",
+      photoUrl: eventRow.photo_url ?? "",
       location: eventRow.location ?? "",
       startAt: eventRow.start_at ? eventRow.start_at.slice(0, 16) : "",
       endAt: eventRow.end_at ? eventRow.end_at.slice(0, 16) : "",
+      recurrenceCadence: eventRow.recurrence_cadence ?? "none",
+      recurrenceWeekdays: eventRow.recurrence_weekdays ?? [],
+      recurrenceUntil: eventRow.recurrence_until ? eventRow.recurrence_until.slice(0, 16) : "",
       tags: (eventRow.tags ?? []).join(", "),
     });
   };
 
   const saveEdit = async (eventId: string) => {
     if (!client || !userId) return;
+    const validationError = validateEventDraft(editEvent);
+    if (validationError) {
+      setMessage(validationError);
+      return;
+    }
+    const startAtIso = new Date(editEvent.startAt).toISOString();
+    const endAtIso = editEvent.endAt ? new Date(editEvent.endAt).toISOString() : null;
+    const recurrenceUntilIso = editEvent.recurrenceUntil ? new Date(editEvent.recurrenceUntil).toISOString() : null;
+    const duplicateCheck = await client
+      .from("events")
+      .select("id,title,location")
+      .eq("created_by", userId)
+      .eq("start_at", startAtIso)
+      .neq("id", eventId)
+      .limit(30);
+    if (duplicateCheck.error) {
+      setMessage(`Error: ${duplicateCheck.error.message}`);
+      return;
+    }
+    const duplicateFound = (duplicateCheck.data ?? []).some((row) => {
+      const rowTitle = normalizeText(row.title ?? "");
+      const rowLocation = normalizeText(row.location ?? "");
+      return rowTitle === normalizeText(editEvent.title) && rowLocation === normalizeText(editEvent.location);
+    });
+    if (duplicateFound) {
+      setMessage("Duplicate event detected for same title, location, and start time.");
+      return;
+    }
     const { error } = await client
       .from("events")
       .update({
-        title: editEvent.title,
+        title: editEvent.title.trim(),
         venue: editEvent.venue || null,
         time_label: editEvent.timeLabel || null,
         category: editEvent.category,
         source_url: editEvent.sourceUrl || null,
-        location: editEvent.location || null,
-        start_at: editEvent.startAt || null,
-        end_at: editEvent.endAt || null,
+        photo_url: editEvent.photoUrl || null,
+        location: editEvent.location.trim() || null,
+        start_at: startAtIso,
+        end_at: endAtIso,
+        recurrence_cadence: editEvent.recurrenceCadence,
+        recurrence_weekdays: editEvent.recurrenceCadence === "weekly" ? editEvent.recurrenceWeekdays : null,
+        recurrence_until: recurrenceUntilIso,
         tags: parseTags(editEvent.tags),
       })
       .eq("id", eventId)
@@ -304,6 +420,12 @@ function OrganizerInner() {
             className="rounded-xl border border-zinc-300 px-3 py-2"
           />
           <input
+            value={newEvent.photoUrl}
+            onChange={(event) => setNewEvent((current) => ({ ...current, photoUrl: event.target.value }))}
+            placeholder="Image URL"
+            className="rounded-xl border border-zinc-300 px-3 py-2"
+          />
+          <input
             value={newEvent.location}
             onChange={(event) => setNewEvent((current) => ({ ...current, location: event.target.value }))}
             placeholder="Lat,Lng"
@@ -320,9 +442,53 @@ function OrganizerInner() {
             type="datetime-local"
             value={newEvent.endAt}
             onChange={(event) => setNewEvent((current) => ({ ...current, endAt: event.target.value }))}
-            placeholder="End time"
+            placeholder="End time (optional)"
             className="rounded-xl border border-zinc-300 px-3 py-2"
           />
+          <select
+            value={newEvent.recurrenceCadence}
+            onChange={(event) =>
+              setNewEvent((current) => ({
+                ...current,
+                recurrenceCadence: event.target.value as EventDraft["recurrenceCadence"],
+                recurrenceWeekdays: event.target.value === "weekly" ? current.recurrenceWeekdays : [],
+              }))
+            }
+            className="rounded-xl border border-zinc-300 px-3 py-2"
+          >
+            <option value="none">Does not repeat</option>
+            <option value="daily">Repeats daily</option>
+            <option value="weekly">Repeats weekly</option>
+            <option value="monthly">Repeats monthly</option>
+          </select>
+          <input
+            type="datetime-local"
+            value={newEvent.recurrenceUntil}
+            onChange={(event) => setNewEvent((current) => ({ ...current, recurrenceUntil: event.target.value }))}
+            placeholder="Repeat until (optional)"
+            className="rounded-xl border border-zinc-300 px-3 py-2"
+          />
+          {newEvent.recurrenceCadence === "weekly" ? (
+            <div className="flex flex-wrap gap-2 rounded-xl border border-zinc-300 px-3 py-2 md:col-span-2">
+              {WEEKDAY_OPTIONS.map((weekday) => (
+                <label key={weekday.value} className="inline-flex items-center gap-1 text-xs text-zinc-700">
+                  <input
+                    type="checkbox"
+                    checked={newEvent.recurrenceWeekdays.includes(weekday.value)}
+                    onChange={(event) =>
+                      setNewEvent((current) => ({
+                        ...current,
+                        recurrenceWeekdays: event.target.checked
+                          ? [...current.recurrenceWeekdays, weekday.value].sort((a, b) => a - b)
+                          : current.recurrenceWeekdays.filter((value) => value !== weekday.value),
+                      }))
+                    }
+                  />
+                  {weekday.label}
+                </label>
+              ))}
+            </div>
+          ) : null}
           <input
             value={newEvent.tags}
             onChange={(event) => setNewEvent((current) => ({ ...current, tags: event.target.value }))}
@@ -347,6 +513,12 @@ function OrganizerInner() {
                 </p>
                 <p className="mt-1 text-xs text-zinc-500">
                   Tags: {(eventRow.tags ?? []).length > 0 ? (eventRow.tags ?? []).join(", ") : "none"}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Repeat: {eventRow.recurrence_cadence ?? "none"}
+                  {eventRow.recurrence_cadence === "weekly" && (eventRow.recurrence_weekdays ?? []).length > 0
+                    ? ` (${(eventRow.recurrence_weekdays ?? []).join(",")})`
+                    : ""}
                 </p>
                 <p className="mt-1 text-xs text-zinc-500">
                   Views: {metric?.view_count ?? 0} | Interested: {metric?.interested_count ?? 0} | Going:{" "}
@@ -401,6 +573,12 @@ function OrganizerInner() {
                       className="rounded-xl border border-zinc-300 px-3 py-2"
                     />
                     <input
+                      value={editEvent.photoUrl}
+                      onChange={(event) => setEditEvent((current) => ({ ...current, photoUrl: event.target.value }))}
+                      placeholder="Image URL"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
                       value={editEvent.location}
                       onChange={(event) => setEditEvent((current) => ({ ...current, location: event.target.value }))}
                       placeholder="Lat,Lng"
@@ -418,6 +596,49 @@ function OrganizerInner() {
                       onChange={(event) => setEditEvent((current) => ({ ...current, endAt: event.target.value }))}
                       className="rounded-xl border border-zinc-300 px-3 py-2"
                     />
+                    <select
+                      value={editEvent.recurrenceCadence}
+                      onChange={(event) =>
+                        setEditEvent((current) => ({
+                          ...current,
+                          recurrenceCadence: event.target.value as EventDraft["recurrenceCadence"],
+                          recurrenceWeekdays: event.target.value === "weekly" ? current.recurrenceWeekdays : [],
+                        }))
+                      }
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    >
+                      <option value="none">Does not repeat</option>
+                      <option value="daily">Repeats daily</option>
+                      <option value="weekly">Repeats weekly</option>
+                      <option value="monthly">Repeats monthly</option>
+                    </select>
+                    <input
+                      type="datetime-local"
+                      value={editEvent.recurrenceUntil}
+                      onChange={(event) => setEditEvent((current) => ({ ...current, recurrenceUntil: event.target.value }))}
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    {editEvent.recurrenceCadence === "weekly" ? (
+                      <div className="flex flex-wrap gap-2 rounded-xl border border-zinc-300 px-3 py-2 md:col-span-2">
+                        {WEEKDAY_OPTIONS.map((weekday) => (
+                          <label key={weekday.value} className="inline-flex items-center gap-1 text-xs text-zinc-700">
+                            <input
+                              type="checkbox"
+                              checked={editEvent.recurrenceWeekdays.includes(weekday.value)}
+                              onChange={(event) =>
+                                setEditEvent((current) => ({
+                                  ...current,
+                                  recurrenceWeekdays: event.target.checked
+                                    ? [...current.recurrenceWeekdays, weekday.value].sort((a, b) => a - b)
+                                    : current.recurrenceWeekdays.filter((value) => value !== weekday.value),
+                                }))
+                              }
+                            />
+                            {weekday.label}
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
                     <input
                       value={editEvent.tags}
                       onChange={(event) => setEditEvent((current) => ({ ...current, tags: event.target.value }))}

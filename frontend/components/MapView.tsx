@@ -36,12 +36,12 @@ const INITIAL_ZOOM = 14;
 const CLUSTER_ZOOM_THRESHOLD = 13;
 const MIN_ZOOM = 3;
 
-const categoryCode: Record<EventPin["category"], string> = {
-  music: "MU",
-  food: "FD",
-  fitness: "FT",
-  social: "SC",
-  arts: "AR",
+const categoryIcon: Record<EventPin["category"], string> = {
+  music: "/category-icons/music.svg",
+  food: "/category-icons/food.svg",
+  fitness: "/category-icons/fitness.svg",
+  social: "/category-icons/social.svg",
+  arts: "/category-icons/arts.svg",
 };
 
 function escapeHtml(value: string): string {
@@ -137,7 +137,7 @@ function eventIcon(event: EventPin) {
         <div class="photo-pin-card">
           <img src="${event.photoUrl}" alt="${safeTitle}" loading="lazy" decoding="async" />
           <div class="photo-pin-overlay"></div>
-          <span class="photo-pin-label">${categoryCode[event.category]}</span>
+          <span class="photo-pin-badge"><img src="${categoryIcon[event.category]}" alt="" loading="lazy" decoding="async" /></span>
         </div>
         <div class="photo-pin-tip"></div>
       </div>

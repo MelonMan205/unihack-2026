@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
@@ -31,8 +32,10 @@ function OnboardingInner() {
   const router = useRouter();
   const client = getSupabaseBrowserClient();
   const [username, setUsername] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [isPending, setIsPending] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -45,7 +48,7 @@ function OnboardingInner() {
       }
       const { data: profileCore, error: profileCoreError } = await client
         .from("profiles")
-        .select("onboarding_completed,username")
+        .select("onboarding_completed,username,avatar_url")
         .eq("id", sessionUser.id)
         .maybeSingle();
       if (profileCoreError) {
@@ -57,6 +60,7 @@ function OnboardingInner() {
         return;
       }
       setUsername(profileCore?.username ?? "");
+      setAvatarUrl(profileCore?.avatar_url ?? "");
 
       const { data: interestData, error: interestsError } = await client
         .from("profiles")
@@ -80,9 +84,35 @@ function OnboardingInner() {
   }, [client, router]);
 
   const canSubmit = useMemo(
-    () => username.trim().length >= 3 && selected.length >= 3 && !isPending,
-    [username, selected.length, isPending],
+    () => username.trim().length >= 3 && selected.length >= 3 && !isPending && !isUploadingAvatar,
+    [username, selected.length, isPending, isUploadingAvatar],
   );
+
+  const uploadAvatar = async (file: File) => {
+    if (!client) return;
+    setError("");
+    setIsUploadingAvatar(true);
+    const { data: sessionData } = await client.auth.getSession();
+    const user = sessionData.session?.user;
+    if (!user) {
+      setIsUploadingAvatar(false);
+      setError("Session expired. Please sign in again.");
+      return;
+    }
+    const extension = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() : "jpg";
+    const filePath = `${user.id}/${crypto.randomUUID()}.${extension || "jpg"}`;
+    const { error: uploadError } = await client.storage
+      .from("avatars")
+      .upload(filePath, file, { upsert: true, contentType: file.type || "image/jpeg" });
+    if (uploadError) {
+      setIsUploadingAvatar(false);
+      setError(`Avatar upload failed: ${uploadError.message}`);
+      return;
+    }
+    const { data } = client.storage.from("avatars").getPublicUrl(filePath);
+    setAvatarUrl(data.publicUrl);
+    setIsUploadingAvatar(false);
+  };
 
   const toggleInterest = (value: string) => {
     setSelected((current) =>
@@ -119,7 +149,7 @@ function OnboardingInner() {
 
     const { error: updateError } = await client
       .from("profiles")
-      .update({ username: normalizedUsername, interests: selected, onboarding_completed: true })
+      .update({ username: normalizedUsername, avatar_url: avatarUrl || null, interests: selected, onboarding_completed: true })
       .eq("id", user.id);
 
     setIsPending(false);
@@ -148,6 +178,39 @@ function OnboardingInner() {
           </Link>
         </div>
         <p className="mt-1 text-sm text-zinc-600">Choose a username and at least 3 interests.</p>
+
+        <label className="mt-4 block text-sm text-zinc-700">
+          Profile image
+          <input
+            value={avatarUrl}
+            onChange={(event) => setAvatarUrl(event.target.value)}
+            placeholder="https://..."
+            className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2"
+          />
+          <input
+            type="file"
+            accept="image/*"
+            className="mt-2 block w-full text-xs text-zinc-600 file:mr-3 file:rounded-lg file:border file:border-zinc-300 file:bg-white file:px-3 file:py-1.5"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              void uploadAvatar(file);
+            }}
+          />
+          {avatarUrl ? (
+            <Image
+              src={avatarUrl}
+              alt="Profile preview"
+              width={64}
+              height={64}
+              unoptimized
+              className="mt-2 h-16 w-16 rounded-full border border-zinc-200 object-cover"
+            />
+          ) : null}
+          <span className="mt-1 block text-xs text-zinc-500">
+            {isUploadingAvatar ? "Uploading image..." : "Optional. Add a URL or upload from your device."}
+          </span>
+        </label>
 
         <label className="mt-4 block text-sm text-zinc-700">
           Username
