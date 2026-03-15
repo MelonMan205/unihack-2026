@@ -798,8 +798,8 @@ export default function HomePage() {
 
       <Sheet open={isMobileFilterOpen} onOpenChange={setIsMobileFilterOpen}>
         <SheetContent
-          side="left"
-          className="z-[1500] w-[86vw] max-w-[320px] border border-white/85 bg-white/92 px-3 pb-4 pt-8 backdrop-blur-3xl"
+          side="bottom"
+          className="z-[1500] mx-auto max-h-[72dvh] w-full max-w-md overflow-y-auto rounded-t-[20px] border border-white/85 bg-white/92 px-3 pb-4 pt-8 backdrop-blur-3xl"
         >
           <SheetHeader>
             <SheetTitle className="text-base">Filters</SheetTitle>
