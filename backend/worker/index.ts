@@ -48,6 +48,10 @@ type NormalizedEvent = {
   location: string; // lat,long
   category: string | null;
   tags: string[];
+  priceTier: "free" | "budget" | "mid" | "premium" | "unknown";
+  alcoholPolicy: "alcoholic" | "non_alcoholic" | "mixed" | "unknown";
+  isSports: boolean;
+  subcategories: string[];
   rawLocation: string;
   date: string;
   time: string;
@@ -65,6 +69,10 @@ type SupabaseEventRow = {
   location: string; // lat,long
   category: string | null;
   tags: string[];
+  price_tier: "free" | "budget" | "mid" | "premium" | "unknown";
+  alcohol_policy: "alcoholic" | "non_alcoholic" | "mixed" | "unknown";
+  is_sports: boolean;
+  subcategories: string[];
   spontaneity_score: number | null;
   crowd_label: "quiet" | "moderate" | "busy" | "packed" | null;
 };
@@ -750,6 +758,61 @@ function normalizeCategory(category: string | null): string | null {
   return ["music", "food", "fitness", "social", "arts"].includes(c) ? c : null;
 }
 
+function deriveEventMetadata(event: {
+  title: string;
+  description: string | null;
+  category: string | null;
+  tags: string[];
+}): {
+  priceTier: "free" | "budget" | "mid" | "premium" | "unknown";
+  alcoholPolicy: "alcoholic" | "non_alcoholic" | "mixed" | "unknown";
+  isSports: boolean;
+  subcategories: string[];
+} {
+  const tags = event.tags.map((value) => value.trim().toLowerCase()).filter(Boolean);
+  const text = `${event.title} ${event.description ?? ""} ${event.category ?? ""} ${tags.join(" ")}`.toLowerCase();
+
+  let priceTier: "free" | "budget" | "mid" | "premium" | "unknown" = "unknown";
+  if (/\bfree\b|no cost|entry free|complimentary/.test(text)) {
+    priceTier = "free";
+  } else if (/\$\s?\d{1,2}\b|under\s?\$?25|cheap|budget/.test(text)) {
+    priceTier = "budget";
+  } else if (/\$\s?(?:[3-9]\d|1\d{2})\b|premium|vip|exclusive/.test(text)) {
+    priceTier = "premium";
+  } else if (/\$\s?\d+/.test(text) || /ticket|bookings|admission/.test(text)) {
+    priceTier = "mid";
+  }
+
+  let alcoholPolicy: "alcoholic" | "non_alcoholic" | "mixed" | "unknown" = "unknown";
+  const hasAlcohol = /\balcohol|bar|beer|wine|cocktail|drinks?\b/.test(text);
+  const hasNonAlcohol = /\bnon[- ]?alcoholic|alcohol[- ]?free|mocktail|family[- ]?friendly\b/.test(text);
+  if (hasAlcohol && hasNonAlcohol) {
+    alcoholPolicy = "mixed";
+  } else if (hasNonAlcohol) {
+    alcoholPolicy = "non_alcoholic";
+  } else if (hasAlcohol) {
+    alcoholPolicy = "alcoholic";
+  }
+
+  const isSports =
+    /\bsport|sports|athletic|athletics|race|racing|run|running|football|soccer|basketball|cricket|tennis|gym\b/.test(
+      text,
+    ) || tags.some((tag) => ["sports", "athletics", "race day", "cricket"].includes(tag));
+
+  const subcategories = Array.from(
+    new Set(
+      tags.filter(
+        (tag) =>
+          tag.length >= 3 &&
+          !["event", "melbourne", "australia"].includes(tag) &&
+          !["music", "food", "fitness", "social", "arts"].includes(tag),
+      ),
+    ),
+  ).slice(0, 8);
+
+  return { priceTier, alcoholPolicy, isSports, subcategories };
+}
+
 function normalizeEvent(
   parsed: ParsedEvent,
   sourceUrl: string,
@@ -761,6 +824,13 @@ function normalizeEvent(
   const sourceHost = new URL(sourceUrl).hostname;
   const date = dateTime.dateDdMmYyyy;
   const time = dateTime.time24;
+  const metadata = deriveEventMetadata({
+    title,
+    description: parsed.description,
+    category: parsed.category,
+    tags: parsed.tags || [],
+  });
+
   return {
     title,
     venue: parsed.venue,
@@ -774,6 +844,10 @@ function normalizeEvent(
     location: geocode.text, // lat,long
     category: normalizeCategory(parsed.category),
     tags: parsed.tags || [],
+    priceTier: metadata.priceTier,
+    alcoholPolicy: metadata.alcoholPolicy,
+    isSports: metadata.isSports,
+    subcategories: metadata.subcategories,
     rawLocation: parsed.location!.trim(),
     date,
     time,
@@ -793,6 +867,10 @@ function toSupabaseRow(event: NormalizedEvent): SupabaseEventRow {
     location: event.location, // lat,long
     category: event.category,
     tags: event.tags,
+    price_tier: event.priceTier,
+    alcohol_policy: event.alcoholPolicy,
+    is_sports: event.isSports,
+    subcategories: event.subcategories,
     spontaneity_score: null,
     crowd_label: null,
   };

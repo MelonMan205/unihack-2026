@@ -514,6 +514,40 @@ body {
   animation: clusterBreathe 2s ease-in-out infinite;
 }
 
+.friend-stack {
+  display: flex;
+  align-items: center;
+  position: relative;
+  height: 24px;
+  width: 58px;
+}
+
+.friend-stack-avatar,
+.friend-stack-overflow {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.92);
+  color: #111827;
+  font-size: 10px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  margin-left: calc(var(--stack-index) * -7px);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.2);
+}
+
+.friend-stack-avatar--close {
+  border-color: rgba(250, 204, 21, 0.92);
+  background: rgba(254, 240, 138, 0.95);
+}
+
+.friend-stack-overflow {
+  background: rgba(15, 23, 42, 0.85);
+  color: #f8fafc;
+}
+
 .user-pin {
   width: 14px;
   height: 14px;
@@ -696,6 +730,19 @@ body {
     width: 34px;
     height: 34px;
     font-size: 10px;
+  }
+
+  .friend-stack {
+    height: 20px;
+    width: 52px;
+  }
+
+  .friend-stack-avatar,
+  .friend-stack-overflow {
+    width: 18px;
+    height: 18px;
+    font-size: 9px;
+    margin-left: calc(var(--stack-index) * -6px);
   }
 
   .user-pin {

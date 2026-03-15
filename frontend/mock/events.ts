@@ -5,6 +5,7 @@ export type EventPin = {
   title: string;
   venue: string;
   timeLabel: string;
+  startAtIso?: string;
   photoUrl: string;
   sourceUrl?: string;
   description?: string;
@@ -13,6 +14,10 @@ export type EventPin = {
   spontaneityScore: number;
   crowdLabel: "Low-key" | "Good vibe" | "Packed";
   tags: string[];
+  priceTier?: "free" | "budget" | "mid" | "premium" | "unknown";
+  alcoholPolicy?: "alcoholic" | "non_alcoholic" | "mixed" | "unknown";
+  isSports?: boolean;
+  subcategories?: string[];
 };
 
 export const DEFAULT_LOCATION: [number, number] = [-37.9105, 145.1362];
