@@ -471,16 +471,6 @@ body {
   background: linear-gradient(to top, rgba(15, 23, 42, 0.42), rgba(15, 23, 42, 0.08) 55%, transparent);
 }
 
-.photo-pin-icon {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  width: 18px;
-  height: 18px;
-  object-fit: cover;
-  display: block;
-}
-
 .photo-pin-tip {
   margin-top: -1px;
   width: 0;
@@ -701,13 +691,6 @@ body {
     width: 42px;
     height: 42px;
     border-width: 1.5px;
-  }
-
-  .photo-pin-icon {
-    left: 4px;
-    bottom: 4px;
-    width: 14px;
-    height: 14px;
   }
 
   .photo-pin-tip {
