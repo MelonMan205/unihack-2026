@@ -272,7 +272,7 @@ export default function HomePage() {
         user_id: string;
         username: string | null;
         display_name: string | null;
-        position: number;
+        attendee_position: number;
         total_visible: number;
         is_close_friend: boolean;
       }>
@@ -667,7 +667,7 @@ export default function HomePage() {
               user_id: row.user_id,
               username: row.username,
               display_name: row.display_name,
-              position: row.position,
+              attendee_position: row.attendee_position,
               total_visible: row.total_visible,
               is_close_friend: row.is_close_friend,
             });
@@ -1156,7 +1156,7 @@ export default function HomePage() {
                 <div className="mt-2 flex flex-wrap gap-2">
                   {selectedEventFriends.map((friend) => (
                     <Link
-                      key={`${friend.user_id}-${friend.position}`}
+                      key={`${friend.user_id}-${friend.attendee_position}`}
                       href={friend.username ? `/profile/${friend.username}` : "/friends"}
                       className={`rounded-full border px-3 py-1 text-xs ${
                         friend.is_close_friend
