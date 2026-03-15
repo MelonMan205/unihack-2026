@@ -21,7 +21,7 @@ type MapViewProps = {
       user_id: string;
       username: string | null;
       display_name: string | null;
-      position: number;
+      attendee_position: number;
       total_visible: number;
       is_close_friend: boolean;
     }>

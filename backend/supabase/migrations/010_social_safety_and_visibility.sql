@@ -2,7 +2,9 @@
 -- Safety-first social updates:
 -- - remove ghost visibility mode
 -- - add bounded social RPCs
--- - add indexes for hot query paths
+-- - avoid heavy locking in transactional migration
+
+set lock_timeout = '2s';
 
 update public.event_attendance
 set visibility = 'only_me',
@@ -15,32 +17,46 @@ set privacy_default = 'only_me'
 where privacy_default = 'ghost';
 
 alter table public.event_attendance
-  drop constraint if exists event_attendance_visibility_check;
+  drop constraint if exists event_attendance_visibility_check_v2;
 
 alter table public.event_attendance
-  add constraint event_attendance_visibility_check
-  check (visibility in ('public', 'friends', 'close_friends', 'only_me'));
+  add constraint event_attendance_visibility_check_v2
+  check (visibility in ('public', 'friends', 'close_friends', 'only_me'))
+  not valid;
+
+alter table public.profiles
+  drop constraint if exists profiles_privacy_default_check_v2;
+
+alter table public.profiles
+  add constraint profiles_privacy_default_check_v2
+  check (privacy_default in ('public', 'friends', 'close_friends', 'only_me'))
+  not valid;
+
+alter table public.event_attendance
+  validate constraint event_attendance_visibility_check_v2;
+
+alter table public.profiles
+  validate constraint profiles_privacy_default_check_v2;
+
+alter table public.event_attendance
+  drop constraint if exists event_attendance_visibility_check;
 
 alter table public.profiles
   drop constraint if exists profiles_privacy_default_check;
 
-alter table public.profiles
-  add constraint profiles_privacy_default_check
-  check (privacy_default in ('public', 'friends', 'close_friends', 'only_me'));
-
-create index if not exists friendships_pair_status_updated_idx
-  on public.friendships (
-    least(requester_id, addressee_id),
-    greatest(requester_id, addressee_id),
-    status,
-    updated_at desc
-  );
-
-create index if not exists event_attendance_event_visibility_status_updated_idx
-  on public.event_attendance (event_id, visibility, status, updated_at desc);
-
-create index if not exists friend_group_members_group_member_idx
-  on public.friend_group_members (group_id, member_id);
+-- NOTE: Intentionally not creating non-concurrent indexes here to avoid write blocking.
+-- Run these manually with CREATE INDEX CONCURRENTLY during a low-risk rollout:
+-- create index concurrently if not exists friendships_pair_status_updated_idx
+--   on public.friendships (
+--     least(requester_id, addressee_id),
+--     greatest(requester_id, addressee_id),
+--     status,
+--     updated_at desc
+--   );
+-- create index concurrently if not exists event_attendance_event_visibility_status_updated_idx
+--   on public.event_attendance (event_id, visibility, status, updated_at desc);
+-- create index concurrently if not exists friend_group_members_group_member_idx
+--   on public.friend_group_members (group_id, member_id);
 
 create or replace function public.can_view_attendance(owner_uuid uuid, visibility_mode text)
 returns boolean
@@ -180,7 +196,9 @@ begin
 end;
 $$;
 
-create or replace function public.app_list_friendships(max_results integer default 100)
+drop function if exists public.app_list_friendships(integer);
+
+create function public.app_list_friendships(max_results integer default 100)
 returns table (
   id uuid,
   status text,
@@ -231,7 +249,7 @@ returns table (
   user_id uuid,
   username text,
   display_name text,
-  position integer,
+  attendee_position integer,
   total_visible integer,
   is_close_friend boolean
 )
@@ -263,14 +281,20 @@ as $$
       and a.user_id <> auth.uid()
       and a.status = any (coalesce(statuses, array['going', 'checked_in']::text[]))
       and public.can_view_attendance(a.user_id, a.visibility)
-      and public.are_friends(auth.uid(), a.user_id)
+      and exists (
+        select 1
+        from public.friendships f
+        where f.status = 'accepted'
+          and least(f.requester_id, f.addressee_id) = least(auth.uid(), a.user_id)
+          and greatest(f.requester_id, f.addressee_id) = greatest(auth.uid(), a.user_id)
+      )
   )
   select
     event_id,
     user_id,
     username,
     display_name,
-    row_num::integer as position,
+    row_num::integer as attendee_position,
     visible_count::integer as total_visible,
     is_close_friend
   from visible_rows
