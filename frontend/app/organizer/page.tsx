@@ -69,16 +69,24 @@ function normalizeText(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function validateEventDraft(draft: EventDraft): string | null {
+function validateEventDraft(draft: EventDraft, options?: { requireStart?: boolean }): string | null {
+  const requireStart = options?.requireStart ?? true;
   if (!draft.title.trim()) return "Event title is required.";
-  if (!draft.startAt) return "Start time is required.";
-  if (draft.endAt && new Date(draft.endAt).getTime() <= new Date(draft.startAt).getTime()) {
+  if (requireStart && !draft.startAt) return "Start time is required.";
+  if (draft.endAt && !draft.startAt) return "Set a start time before setting an end time.";
+  if (draft.endAt && draft.startAt && new Date(draft.endAt).getTime() <= new Date(draft.startAt).getTime()) {
     return "End time must be after start time.";
+  }
+  if (draft.recurrenceCadence !== "none" && !draft.startAt) {
+    return "Set a start time to enable recurring events.";
   }
   if (draft.recurrenceCadence === "weekly" && draft.recurrenceWeekdays.length === 0) {
     return "Select at least one weekday for weekly repeats.";
   }
-  if (draft.recurrenceUntil && new Date(draft.recurrenceUntil).getTime() < new Date(draft.startAt).getTime()) {
+  if (draft.recurrenceUntil && !draft.startAt) {
+    return "Set a start time before setting repeat-until.";
+  }
+  if (draft.recurrenceUntil && draft.startAt && new Date(draft.recurrenceUntil).getTime() < new Date(draft.startAt).getTime()) {
     return "Repeat-until date must be after the event start.";
   }
   return null;
@@ -265,33 +273,35 @@ function OrganizerInner() {
 
   const saveEdit = async (eventId: string) => {
     if (!client || !userId) return;
-    const validationError = validateEventDraft(editEvent);
+    const validationError = validateEventDraft(editEvent, { requireStart: false });
     if (validationError) {
       setMessage(validationError);
       return;
     }
-    const startAtIso = new Date(editEvent.startAt).toISOString();
+    const startAtIso = editEvent.startAt ? new Date(editEvent.startAt).toISOString() : null;
     const endAtIso = editEvent.endAt ? new Date(editEvent.endAt).toISOString() : null;
     const recurrenceUntilIso = editEvent.recurrenceUntil ? new Date(editEvent.recurrenceUntil).toISOString() : null;
-    const duplicateCheck = await client
-      .from("events")
-      .select("id,title,location")
-      .eq("created_by", userId)
-      .eq("start_at", startAtIso)
-      .neq("id", eventId)
-      .limit(30);
-    if (duplicateCheck.error) {
-      setMessage(`Error: ${duplicateCheck.error.message}`);
-      return;
-    }
-    const duplicateFound = (duplicateCheck.data ?? []).some((row) => {
-      const rowTitle = normalizeText(row.title ?? "");
-      const rowLocation = normalizeText(row.location ?? "");
-      return rowTitle === normalizeText(editEvent.title) && rowLocation === normalizeText(editEvent.location);
-    });
-    if (duplicateFound) {
-      setMessage("Duplicate event detected for same title, location, and start time.");
-      return;
+    if (startAtIso) {
+      const duplicateCheck = await client
+        .from("events")
+        .select("id,title,location")
+        .eq("created_by", userId)
+        .eq("start_at", startAtIso)
+        .neq("id", eventId)
+        .limit(30);
+      if (duplicateCheck.error) {
+        setMessage(`Error: ${duplicateCheck.error.message}`);
+        return;
+      }
+      const duplicateFound = (duplicateCheck.data ?? []).some((row) => {
+        const rowTitle = normalizeText(row.title ?? "");
+        const rowLocation = normalizeText(row.location ?? "");
+        return rowTitle === normalizeText(editEvent.title) && rowLocation === normalizeText(editEvent.location);
+      });
+      if (duplicateFound) {
+        setMessage("Duplicate event detected for same title, location, and start time.");
+        return;
+      }
     }
     const { error } = await client
       .from("events")

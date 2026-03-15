@@ -81,16 +81,24 @@ function normalizeText(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function validateEventDraft(draft: EventDraft): string | null {
+function validateEventDraft(draft: EventDraft, options?: { requireStart?: boolean }): string | null {
+  const requireStart = options?.requireStart ?? true;
   if (!draft.title.trim()) return "Event title is required.";
-  if (!draft.startAt) return "Start time is required.";
-  if (draft.endAt && new Date(draft.endAt).getTime() <= new Date(draft.startAt).getTime()) {
+  if (requireStart && !draft.startAt) return "Start time is required.";
+  if (draft.endAt && !draft.startAt) return "Set a start time before setting an end time.";
+  if (draft.endAt && draft.startAt && new Date(draft.endAt).getTime() <= new Date(draft.startAt).getTime()) {
     return "End time must be after start time.";
+  }
+  if (draft.recurrenceCadence !== "none" && !draft.startAt) {
+    return "Set a start time to enable recurring events.";
   }
   if (draft.recurrenceCadence === "weekly" && draft.recurrenceWeekdays.length === 0) {
     return "Select at least one weekday for weekly repeats.";
   }
-  if (draft.recurrenceUntil && new Date(draft.recurrenceUntil).getTime() < new Date(draft.startAt).getTime()) {
+  if (draft.recurrenceUntil && !draft.startAt) {
+    return "Set a start time before setting repeat-until.";
+  }
+  if (draft.recurrenceUntil && draft.startAt && new Date(draft.recurrenceUntil).getTime() < new Date(draft.startAt).getTime()) {
     return "Repeat-until date must be after the event start.";
   }
   return null;
@@ -217,16 +225,16 @@ function AdminInner() {
 
   const saveEventEdit = async (eventId: string) => {
     if (!client || !userId) return;
-    const validationError = validateEventDraft(eventDraft);
+    const validationError = validateEventDraft(eventDraft, { requireStart: false });
     if (validationError) {
       setMessage(validationError);
       return;
     }
-    const startAtIso = new Date(eventDraft.startAt).toISOString();
+    const startAtIso = eventDraft.startAt ? new Date(eventDraft.startAt).toISOString() : null;
     const endAtIso = eventDraft.endAt ? new Date(eventDraft.endAt).toISOString() : null;
     const recurrenceUntilIso = eventDraft.recurrenceUntil ? new Date(eventDraft.recurrenceUntil).toISOString() : null;
     const existingEvent = events.find((row) => row.id === eventId);
-    if (existingEvent?.created_by) {
+    if (existingEvent?.created_by && startAtIso) {
       const duplicateCheck = await client
         .from("events")
         .select("id,title,location,created_by")
@@ -453,18 +461,24 @@ function AdminInner() {
                       placeholder="Lat,Lng"
                       className="rounded-xl border border-zinc-300 px-3 py-2"
                     />
-                    <input
-                      type="datetime-local"
-                      value={eventDraft.startAt}
-                      onChange={(event) => setEventDraft((current) => ({ ...current, startAt: event.target.value }))}
-                      className="rounded-xl border border-zinc-300 px-3 py-2"
-                    />
-                    <input
-                      type="datetime-local"
-                      value={eventDraft.endAt}
-                      onChange={(event) => setEventDraft((current) => ({ ...current, endAt: event.target.value }))}
-                      className="rounded-xl border border-zinc-300 px-3 py-2"
-                    />
+                    <label className="block text-xs text-zinc-700">
+                      Start date/time
+                      <input
+                        type="datetime-local"
+                        value={eventDraft.startAt}
+                        onChange={(event) => setEventDraft((current) => ({ ...current, startAt: event.target.value }))}
+                        className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2"
+                      />
+                    </label>
+                    <label className="block text-xs text-zinc-700">
+                      End date/time (optional)
+                      <input
+                        type="datetime-local"
+                        value={eventDraft.endAt}
+                        onChange={(event) => setEventDraft((current) => ({ ...current, endAt: event.target.value }))}
+                        className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2"
+                      />
+                    </label>
                     <select
                       value={eventDraft.recurrenceCadence}
                       onChange={(event) =>
@@ -481,12 +495,15 @@ function AdminInner() {
                       <option value="weekly">Repeats weekly</option>
                       <option value="monthly">Repeats monthly</option>
                     </select>
-                    <input
-                      type="datetime-local"
-                      value={eventDraft.recurrenceUntil}
-                      onChange={(event) => setEventDraft((current) => ({ ...current, recurrenceUntil: event.target.value }))}
-                      className="rounded-xl border border-zinc-300 px-3 py-2"
-                    />
+                    <label className="block text-xs text-zinc-700">
+                      Repeat until (optional)
+                      <input
+                        type="datetime-local"
+                        value={eventDraft.recurrenceUntil}
+                        onChange={(event) => setEventDraft((current) => ({ ...current, recurrenceUntil: event.target.value }))}
+                        className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2"
+                      />
+                    </label>
                     {eventDraft.recurrenceCadence === "weekly" ? (
                       <div className="flex flex-wrap gap-2 rounded-xl border border-zinc-300 px-3 py-2 md:col-span-2">
                         {WEEKDAY_OPTIONS.map((weekday) => (
