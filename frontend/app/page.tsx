@@ -312,6 +312,7 @@ export default function HomePage() {
   const [userInterests, setUserInterests] = useState<string[]>([]);
   const [dashboardProfile, setDashboardProfile] = useState<DashboardProfileRow | null>(null);
   const [dashboardFriends, setDashboardFriends] = useState<DashboardFriendRow[]>([]);
+  const [incomingFriendRequestsCount, setIncomingFriendRequestsCount] = useState(0);
   const [dashboardSaved, setDashboardSaved] = useState<DashboardSavedRow[]>([]);
   const [attendanceByEventId, setAttendanceByEventId] = useState<Record<string, string>>({});
   const [attendanceVisibilityByEventId, setAttendanceVisibilityByEventId] = useState<Record<string, string>>({});
@@ -336,8 +337,23 @@ export default function HomePage() {
   const [isLocationReady, setIsLocationReady] = useState(false);
   const [sheetImageLoadError, setSheetImageLoadError] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const [isMobileDockCollapsed, setIsMobileDockCollapsed] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const friendOverlayDebounceRef = useRef<number | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
   const [, startTransition] = useTransition();
+
+  const showToast = useCallback((message: string) => {
+    setToastMessage(message);
+    if (toastTimeoutRef.current) {
+      window.clearTimeout(toastTimeoutRef.current);
+    }
+    toastTimeoutRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+      toastTimeoutRef.current = null;
+    }, 2200);
+  }, []);
 
   const syncCurrentLocation = useCallback(() => {
     if (!("geolocation" in navigator)) {
@@ -413,6 +429,7 @@ export default function HomePage() {
     if (!client || !authUserId) {
       setDashboardProfile(null);
       setDashboardFriends([]);
+      setIncomingFriendRequestsCount(0);
       setDashboardSaved([]);
       return;
     }
@@ -435,8 +452,11 @@ export default function HomePage() {
     client
       .rpc("app_list_friendships", { max_results: 120 })
       .then(({ data }) => {
-        const accepted = ((data ?? []) as DashboardFriendRow[]).filter((row) => row.status === "accepted");
+        const friendships = (data ?? []) as DashboardFriendRow[];
+        const accepted = friendships.filter((row) => row.status === "accepted");
+        const incomingPending = friendships.filter((row) => row.is_incoming && row.status !== "accepted").length;
         setDashboardFriends(accepted);
+        setIncomingFriendRequestsCount(incomingPending);
       });
 
     client
@@ -452,6 +472,32 @@ export default function HomePage() {
   useEffect(() => {
     syncCurrentLocation();
   }, [syncCurrentLocation]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 640px)");
+    const updateViewportMatch = () => setIsMobileViewport(mediaQuery.matches);
+    updateViewportMatch();
+    mediaQuery.addEventListener("change", updateViewportMatch);
+    return () => mediaQuery.removeEventListener("change", updateViewportMatch);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      setIsMobileDockCollapsed(false);
+    }
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    setIsMobileDockCollapsed(false);
+  }, [viewMode]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        window.clearTimeout(toastTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const client = getSupabaseBrowserClient();
@@ -575,6 +621,15 @@ export default function HomePage() {
     }
     setAttendanceByEventId((current) => ({ ...current, [eventId]: status }));
     setAttendanceVisibilityByEventId((current) => ({ ...current, [eventId]: visibility }));
+    const statusLabel =
+      status === "checked_in"
+        ? "checked in"
+        : status === "going"
+          ? "going"
+          : status === "interested"
+            ? "interested"
+            : "not going";
+    showToast(`set as ${statusLabel} (${visibility.replace("_", " ")})`);
   };
 
   const toggleSave = async (eventId: string) => {
@@ -621,6 +676,7 @@ export default function HomePage() {
         next.delete(eventId);
         return next;
       });
+      showToast("removed from saved events");
       return;
     }
 
@@ -634,6 +690,7 @@ export default function HomePage() {
       return;
     }
     setSavedEventIds((current) => new Set(current).add(eventId));
+    showToast("saved event");
   };
 
   const checkInToEvent = async (eventId: string) => {
@@ -648,6 +705,7 @@ export default function HomePage() {
       return;
     }
     setAttendanceByEventId((current) => ({ ...current, [eventId]: "checked_in" }));
+    showToast("checked in successfully");
   };
 
   const categoryFilteredEvents = useMemo(
@@ -686,7 +744,11 @@ export default function HomePage() {
     () =>
       searchedEvents.filter((event) => {
         if (sportsFilter === "sports_only" && !event.isSports) return false;
-        if (priceFilter !== "all" && event.priceTier !== priceFilter) return false;
+        if (priceFilter === "free") {
+          const eventTags = collectEventTags(event);
+          if (event.priceTier !== "free" && !eventTags.includes("free")) return false;
+        }
+        if (priceFilter !== "all" && priceFilter !== "free" && event.priceTier !== priceFilter) return false;
         if (subcategoryFilter !== "all") {
           const eventTags = collectEventTags(event);
           if (!eventTags.includes(subcategoryFilter.toLowerCase())) return false;
@@ -808,7 +870,6 @@ export default function HomePage() {
     [goingEvents, events],
   );
   const dashboardName = dashboardProfile?.display_name?.trim() || dashboardProfile?.username?.trim() || "friend";
-
   const onMapViewportChange = useCallback(
     (nextViewport: Viewport) => {
       setViewport((currentViewport) =>
@@ -816,6 +877,25 @@ export default function HomePage() {
       );
     },
     [setViewport],
+  );
+
+  const collapseMobileDock = useCallback(() => {
+    if (!isMobileViewport) {
+      return;
+    }
+    setOpenDiscoverControl(null);
+    setIsMobileDockCollapsed(true);
+  }, [isMobileViewport]);
+
+  const friendsButtonLabel = (
+    <span className="inline-flex items-center gap-1.5">
+      <span>friends</span>
+      {incomingFriendRequestsCount > 0 ? (
+        <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+          {incomingFriendRequestsCount > 9 ? "9+" : incomingFriendRequestsCount}
+        </span>
+      ) : null}
+    </span>
   );
 
   const filterPanel = (
@@ -939,7 +1019,7 @@ export default function HomePage() {
                 profile
               </Link>
               <Link href="/friends" className="icon-filter-btn rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-[11px] text-zinc-700">
-                friends
+                {friendsButtonLabel}
               </Link>
               <Link href="/saved" className="icon-filter-btn rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-[11px] text-zinc-700">
                 saved
@@ -953,6 +1033,7 @@ export default function HomePage() {
           <MapView
             events={filteredEvents}
             onSelectEvent={(event) => setSelectedEvent(event)}
+            onMapBackgroundTap={collapseMobileDock}
             userLocation={userLocation}
             radiusKm={radiusKm}
             showRadiusIndicator={isRadiusEnabled}
@@ -972,7 +1053,10 @@ export default function HomePage() {
           <div className="h-[100dvh] min-h-[100svh] w-full bg-[#f8f3e8]" />
         )
       ) : (
-        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-[calc(22rem+env(safe-area-inset-bottom))] pt-24 sm:pb-[calc(19rem+env(safe-area-inset-bottom))]">
+        <div
+          className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-[calc(22rem+env(safe-area-inset-bottom))] pt-24 sm:pb-[calc(19rem+env(safe-area-inset-bottom))]"
+          onPointerDown={collapseMobileDock}
+        >
           <div className="mx-auto grid w-full max-w-6xl gap-4 px-3 sm:px-4 lg:grid-cols-12">
             <Card className="glass-panel border-white/45 lg:col-span-12">
               <CardContent className="space-y-3 p-4 sm:p-5">
@@ -1021,7 +1105,14 @@ export default function HomePage() {
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-semibold tracking-[0.1em] text-zinc-500">friends</p>
                   <Link href="/friends" className="icon-filter-btn rounded-full border border-zinc-300 bg-white/80 px-3 py-1 text-xs text-zinc-700">
-                    manage
+                    <span className="inline-flex items-center gap-1.5">
+                      <span>manage</span>
+                      {incomingFriendRequestsCount > 0 ? (
+                        <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                          {incomingFriendRequestsCount > 9 ? "9+" : incomingFriendRequestsCount}
+                        </span>
+                      ) : null}
+                    </span>
                   </Link>
                 </div>
                 <div className="space-y-2">
@@ -1107,7 +1198,7 @@ export default function HomePage() {
             <SheetTitle className="text-base">Filters</SheetTitle>
             <SheetDescription>Clean controls for discovery mode and event filters.</SheetDescription>
           </SheetHeader>
-          <div className="mt-3">{filterPanel}</div>
+          <div className="mt-3 flex justify-center">{filterPanel}</div>
         </SheetContent>
       </Sheet>
 
@@ -1120,13 +1211,29 @@ export default function HomePage() {
       >
         <div className="mx-auto w-full max-w-4xl px-3 sm:px-4">
           <Card
-            className={`glass-panel discover-dock pointer-events-auto w-full border-white/30 animate-rise-delayed transition-all duration-300 ${
+            className={`glass-panel discover-dock mobile-discover-dock pointer-events-auto w-full border-white/30 animate-rise-delayed transition-all duration-300 ${
+              isMobileDockCollapsed ? "mobile-discover-dock--collapsed" : ""
+            } ${
               viewMode === "dashboard" ? "border-yellow-300/70 bg-white/80 shadow-[0_20px_45px_rgba(250,204,21,0.22)]" : ""
             }`}
           >
-            <CardContent className="flex flex-col gap-2.5 p-2.5 pt-3 sm:gap-3 sm:p-4 sm:pt-5">
+            <CardContent
+              className={`flex flex-col gap-2.5 sm:gap-3 sm:p-4 sm:pt-5 ${
+                isMobileDockCollapsed ? "px-3 py-2" : "p-2.5 pt-3"
+              }`}
+            >
+              <div className="pointer-events-auto mb-0.5 flex items-center justify-center sm:hidden">
+                <button
+                  type="button"
+                  onClick={() => setIsMobileDockCollapsed((current) => !current)}
+                  className="mobile-discover-dock__grabber"
+                  aria-label={isMobileDockCollapsed ? "Expand bottom bar" : "Collapse bottom bar"}
+                />
+              </div>
+
+              <div className={`mobile-discover-dock__body ${isMobileDockCollapsed ? "mobile-discover-dock__body--collapsed" : ""}`}>
               <div className="flex flex-col gap-2 pt-0.5 sm:flex-row sm:items-start sm:justify-between">
-                <div className="pointer-events-auto max-w-full overflow-x-auto no-scrollbar">
+                <div className="pointer-events-auto mx-auto max-w-full overflow-x-auto text-center no-scrollbar sm:mx-0 sm:text-left">
                   {viewMode === "map" ? (
                     <p className="inline-flex items-center gap-1 whitespace-nowrap text-[14px] font-semibold text-zinc-900 sm:text-[17px]">
                       <span>{filteredEvents.length}</span>
@@ -1166,7 +1273,7 @@ export default function HomePage() {
                   )}
                 </div>
 
-                <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
+                <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5 sm:justify-start sm:gap-2">
                   {viewMode === "map" ? (
                     <>
                       <Button
@@ -1235,7 +1342,7 @@ export default function HomePage() {
                         href="/friends"
                         className="icon-filter-btn icon-filter-btn--active rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900"
                       >
-                        friends
+                        {friendsButtonLabel}
                       </Link>
                       <Link
                         href="/saved"
@@ -1326,14 +1433,14 @@ export default function HomePage() {
                     className="h-10 w-full rounded-[13px] border border-zinc-300/70 bg-white/82 pl-9 pr-3 text-[13px] text-zinc-800 outline-none placeholder:text-zinc-500 focus:border-zinc-400 sm:h-11 sm:rounded-[14px] sm:text-sm"
                   />
                 </div>
-                <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                <div className="flex flex-wrap justify-center gap-1.5 sm:gap-2">
                   {authUserId ? (
                     <>
                       <Link href="/profile/settings" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
                         profile
                       </Link>
                       <Link href="/friends" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
-                        friends
+                        {friendsButtonLabel}
                       </Link>
                       <Link href="/saved" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
                         saved
@@ -1355,6 +1462,7 @@ export default function HomePage() {
                     </Link>
                   )}
                 </div>
+              </div>
               </div>
             </CardContent>
           </Card>
@@ -1392,10 +1500,11 @@ export default function HomePage() {
                         text: `Check this event: ${selectedEvent.title}`,
                         url: selectedEvent.sourceUrl,
                       });
+                      showToast("shared event");
                       return;
                     }
                     void navigator.clipboard.writeText(selectedEvent.sourceUrl);
-                    alert("Event link copied.");
+                    showToast("event link copied");
                   }}
                   disabled={!selectedEvent.sourceUrl}
                   className="h-8 rounded-full px-3 text-xs"
@@ -1523,6 +1632,7 @@ export default function HomePage() {
                   onClick={() => {
                     if (selectedEvent.sourceUrl) {
                       window.open(selectedEvent.sourceUrl, "_blank", "noopener,noreferrer");
+                      showToast("opened event source");
                     }
                   }}
                   variant="outline"
@@ -1537,7 +1647,7 @@ export default function HomePage() {
                   onClick={() => {
                     if (selectedEvent.sourceUrl) {
                       void navigator.clipboard.writeText(selectedEvent.sourceUrl);
-                      alert("Event link copied.");
+                      showToast("event link copied");
                     }
                   }}
                   variant="outline"
@@ -1555,6 +1665,15 @@ export default function HomePage() {
           ) : null}
         </SheetContent>
       </Sheet>
+      <div
+        className={`pointer-events-none absolute inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-[1700] flex justify-center px-4 transition-all duration-300 ${
+          toastMessage ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
+        }`}
+      >
+        <div className="w-full max-w-sm rounded-2xl border border-white/60 bg-white/55 px-4 py-2.5 text-center text-[12px] font-semibold text-zinc-800 shadow-[0_12px_28px_rgba(15,23,42,0.2)] backdrop-blur-2xl sm:text-sm">
+          {toastMessage ?? ""}
+        </div>
+      </div>
     </main>
   );
 }

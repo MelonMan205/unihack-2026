@@ -28,6 +28,7 @@ type MapViewProps = {
   >;
   onViewportChange?: (viewport: { north: number; south: number; east: number; west: number; zoom: number }) => void;
   onSelectEvent: (event: EventPin) => void;
+  onMapBackgroundTap?: () => void;
   isPickingLocation?: boolean;
   onPickLocation?: (location: [number, number]) => void;
 };
@@ -115,6 +116,23 @@ function LocationPicker({
         return;
       }
       onPickLocation([event.latlng.lat, event.latlng.lng]);
+    },
+  });
+
+  return null;
+}
+
+function MapTapWatcher({ onMapBackgroundTap }: { onMapBackgroundTap?: () => void }) {
+  useMapEvents({
+    click: (event) => {
+      if (!onMapBackgroundTap) {
+        return;
+      }
+      const targetElement = event.originalEvent.target as HTMLElement | null;
+      if (targetElement?.closest(".leaflet-marker-icon, .leaflet-tooltip, .leaflet-control-container")) {
+        return;
+      }
+      onMapBackgroundTap();
     },
   });
 
@@ -217,6 +235,7 @@ export function MapView({
   friendAttendanceByEventId = {},
   onViewportChange,
   onSelectEvent,
+  onMapBackgroundTap,
   isPickingLocation = false,
   onPickLocation,
 }: MapViewProps) {
@@ -237,6 +256,7 @@ export function MapView({
       <ZoomWatcher onZoom={setZoom} />
       <ViewportWatcher onViewportChange={onViewportChange} />
       <LocationPicker enabled={isPickingLocation} onPickLocation={onPickLocation} />
+      <MapTapWatcher onMapBackgroundTap={onMapBackgroundTap} />
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
         url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
