@@ -122,7 +122,7 @@ const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent";
 const USER_AGENT = "Mozilla/5.0 (compatible; UniHackEventWorker/2.1)";
 const OSM_USER_AGENT = "UniHackEventWorker/2.1 (contact: unihack-events@example.com)";
-const MAX_EVENT_PAGES_PER_SOURCE = 3;
+const MAX_EVENT_PAGES_PER_SOURCE = 20;
 const EVENT_PROCESS_CONCURRENCY = 4;
 const GEOCODE_MIN_GAP_MS = 1100;
 const DEFAULT_EVENT_TIMEZONE = "Australia/Melbourne";
