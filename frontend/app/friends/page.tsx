@@ -12,6 +12,7 @@ type Friendship = {
   other_user_id: string;
   other_username: string | null;
   other_display_name: string | null;
+  is_close_friend: boolean;
 };
 
 type ProfileSearchResult = {
@@ -130,6 +131,41 @@ function FriendsInner() {
     }
   };
 
+  const removeFriend = async (targetUserId: string) => {
+    if (!client) return;
+    setError("");
+    setMessage("");
+    const { error: removeError } = await client.rpc("app_remove_friend", {
+      target_user_id: targetUserId,
+    });
+    if (removeError) {
+      setError(removeError.message);
+      return;
+    }
+    setMessage("Friend removed.");
+    if (userId) {
+      await loadFriendships(userId);
+    }
+  };
+
+  const setCloseFriend = async (targetUserId: string, makeClose: boolean) => {
+    if (!client) return;
+    setError("");
+    setMessage("");
+    const { error: closeFriendError } = await client.rpc("app_set_close_friend", {
+      target_user_id: targetUserId,
+      make_close: makeClose,
+    });
+    if (closeFriendError) {
+      setError(closeFriendError.message);
+      return;
+    }
+    setMessage(makeClose ? "Added to close friends." : "Removed from close friends.");
+    if (userId) {
+      await loadFriendships(userId);
+    }
+  };
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-3xl p-4">
       <div className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -187,6 +223,11 @@ function FriendsInner() {
                 <p className="text-sm font-medium text-zinc-800">{preferredName}</p>
                 <p className="text-xs text-zinc-600">{usernameHandle}</p>
                 <p className="text-xs text-zinc-600">Status: {friendship.status}</p>
+                {friendship.status === "accepted" ? (
+                  <p className="text-xs text-zinc-600">
+                    Close friend: {friendship.is_close_friend ? "yes" : "no"}
+                  </p>
+                ) : null}
                 {friendship.is_incoming && friendship.status === "pending" ? (
                   <div className="mt-2 flex gap-2">
                     <button
@@ -202,6 +243,26 @@ function FriendsInner() {
                       className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-700"
                     >
                       Decline
+                    </button>
+                  </div>
+                ) : null}
+                {friendship.status === "accepted" ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void setCloseFriend(friendship.other_user_id, !friendship.is_close_friend)
+                      }
+                      className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-700"
+                    >
+                      {friendship.is_close_friend ? "Remove Close Friend" : "Make Close Friend"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void removeFriend(friendship.other_user_id)}
+                      className="rounded-lg border border-red-300 px-3 py-1 text-xs text-red-700"
+                    >
+                      Remove Friend
                     </button>
                   </div>
                 ) : null}

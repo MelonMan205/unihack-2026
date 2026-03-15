@@ -9,6 +9,22 @@ import {
 } from "@/lib/schema-errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
+const CURATED_INTEREST_DEFAULTS = [
+  "music",
+  "nightlife",
+  "sports",
+  "food",
+  "festivals",
+  "comedy",
+  "markets",
+  "art",
+  "technology",
+  "networking",
+  "outdoor",
+  "fitness",
+  "gaming",
+];
+
 function SettingsInner() {
   const client = getSupabaseBrowserClient();
   const [userId, setUserId] = useState<string | null>(null);
@@ -16,7 +32,9 @@ function SettingsInner() {
   const [displayName, setDisplayName] = useState("");
   const [bio, setBio] = useState("");
   const [privacyDefault, setPrivacyDefault] = useState("friends");
-  const [interestsCsv, setInterestsCsv] = useState("");
+  const [selectedInterests, setSelectedInterests] = useState<string[]>([]);
+  const [interestInput, setInterestInput] = useState("");
+  const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -50,20 +68,42 @@ function SettingsInner() {
           setMessage(`Error: ${interestsError.message}`);
         }
       } else {
-        setInterestsCsv(Array.isArray(interestsData?.interests) ? interestsData.interests.join(", ") : "");
+        setSelectedInterests(Array.isArray(interestsData?.interests) ? interestsData.interests : []);
       }
+
+      const { data: popularTagsData } = await client.rpc("app_list_popular_interest_tags", {
+        max_results: 50,
+      });
+      const fromDb = Array.isArray(popularTagsData)
+        ? popularTagsData
+            .map((row) =>
+              typeof row?.tag === "string" && row.tag.trim().length > 0 ? row.tag.trim().toLowerCase() : null,
+            )
+            .filter((value): value is string => Boolean(value))
+        : [];
+      const merged = Array.from(new Set([...fromDb, ...CURATED_INTEREST_DEFAULTS])).slice(0, 60);
+      setSuggestedTags(merged);
     });
   }, [client]);
+
+  const addInterest = (rawValue: string) => {
+    const normalized = rawValue.trim().toLowerCase().replace(/\s+/g, "_");
+    if (!normalized) return;
+    setSelectedInterests((current) =>
+      current.includes(normalized) ? current : [...current, normalized].slice(0, 30),
+    );
+    setInterestInput("");
+  };
+
+  const removeInterest = (value: string) => {
+    setSelectedInterests((current) => current.filter((item) => item !== value));
+  };
 
   const onSave = async (event: FormEvent) => {
     event.preventDefault();
     setMessage("");
     if (!client || !userId) return;
 
-    const interests = interestsCsv
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
     const { error } = await client
       .from("profiles")
       .update({
@@ -71,7 +111,7 @@ function SettingsInner() {
         display_name: displayName || null,
         bio: bio || null,
         privacy_default: privacyDefault,
-        interests,
+        interests: selectedInterests,
       })
       .eq("id", userId);
     if (error) {
@@ -114,16 +154,63 @@ function SettingsInner() {
               <option value="friends">Friends</option>
               <option value="close_friends">Close Friends</option>
               <option value="only_me">Only me</option>
-              <option value="ghost">Ghost</option>
             </select>
           </label>
           <label className="block text-sm text-zinc-700">
-            Interests (comma separated)
-            <input
-              value={interestsCsv}
-              onChange={(event) => setInterestsCsv(event.target.value)}
-              className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2"
-            />
+            Interests
+            <div className="mt-1 rounded-xl border border-zinc-300 bg-white p-3">
+              <div className="mb-2 flex flex-wrap gap-2">
+                {selectedInterests.map((interest) => (
+                  <button
+                    key={interest}
+                    type="button"
+                    onClick={() => removeInterest(interest)}
+                    className="rounded-full border border-zinc-300 bg-zinc-50 px-3 py-1 text-xs text-zinc-700 hover:border-zinc-400"
+                    title="Remove interest"
+                  >
+                    {interest.replaceAll("_", " ")} ×
+                  </button>
+                ))}
+                {selectedInterests.length === 0 ? (
+                  <span className="text-xs text-zinc-500">No interests selected yet.</span>
+                ) : null}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={interestInput}
+                  onChange={(event) => setInterestInput(event.target.value)}
+                  className="w-full rounded-xl border border-zinc-300 px-3 py-2"
+                  placeholder="Add custom interest"
+                />
+                <button
+                  type="button"
+                  onClick={() => addInterest(interestInput)}
+                  className="rounded-xl border border-zinc-300 px-3 py-2 text-xs text-zinc-700"
+                >
+                  Add
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-zinc-500">Tap a suggested tag to add it quickly.</p>
+              <div className="mt-2 flex max-h-40 flex-wrap gap-2 overflow-y-auto pr-1">
+                {suggestedTags.map((tag) => {
+                  const active = selectedInterests.includes(tag);
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => addInterest(tag)}
+                      className={`rounded-full border px-3 py-1 text-xs ${
+                        active
+                          ? "border-amber-500 bg-amber-100 text-amber-900"
+                          : "border-zinc-300 bg-white text-zinc-700"
+                      }`}
+                    >
+                      {tag.replaceAll("_", " ")}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </label>
           <button type="submit" className="rounded-xl bg-amber-400 px-4 py-2 font-semibold text-zinc-900 hover:bg-amber-300">
             Save

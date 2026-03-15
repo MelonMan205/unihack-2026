@@ -9,6 +9,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
 } from "react";
@@ -20,6 +21,7 @@ import {
   MapPin,
   Palette,
   Search,
+  Sparkles,
   UtensilsCrossed,
   Users2,
   Waves,
@@ -52,7 +54,12 @@ const FILTERS: { label: string; value: Category | "all" }[] = [
   { label: "Arts", value: "arts" },
 ];
 
-type TimeWindow = "tonight" | "today" | "any";
+type TimeWindow = "3h" | "12h" | "1d" | "3d" | "1w" | "any";
+type DiscoveryMode = "recommended" | "all";
+type SportsFilter = "all" | "sports_only";
+type AlcoholFilter = "all" | "alcoholic" | "non_alcoholic";
+type PriceFilter = "all" | "free" | "budget" | "mid" | "premium";
+type Viewport = { north: number; south: number; east: number; west: number; zoom: number };
 
 const DEFAULT_RADIUS_KM = 1;
 const MIN_RADIUS_KM = 0.5;
@@ -60,7 +67,12 @@ const MAX_RADIUS_KM = 20;
 const RADIUS_STEP_KM = 0.5;
 const EVENTS_POLL_INTERVAL_MS = 30_000;
 const EVENT_CACHE_KEY = "haps-live-events-v1";
-const TIME_WINDOWS: TimeWindow[] = ["tonight", "today", "any"];
+const TIME_WINDOWS: TimeWindow[] = ["3h", "12h", "1d", "3d", "1w", "any"];
+const FEATURE_FLAGS = {
+  friendAttendanceOverlay: true,
+  recommendedMode: true,
+  viewportQueryMode: true,
+} as const;
 
 const categoryIcons: Record<Category, ReactNode> = {
   music: <Waves className="h-[16px] w-[16px] stroke-[1.85]" />,
@@ -111,13 +123,97 @@ function formatRadiusLabel(radiusKm: number): string {
 }
 
 function formatTimeWindowLabel(timeWindow: TimeWindow): string {
-  if (timeWindow === "today") {
-    return "today";
+  if (timeWindow === "any") return "anytime";
+  if (timeWindow === "1d") return "1 day";
+  if (timeWindow === "3d") return "3 days";
+  if (timeWindow === "1w") return "1 week";
+  return timeWindow;
+}
+
+function timeWindowToMs(timeWindow: TimeWindow): number | null {
+  if (timeWindow === "3h") return 3 * 60 * 60 * 1000;
+  if (timeWindow === "12h") return 12 * 60 * 60 * 1000;
+  if (timeWindow === "1d") return 24 * 60 * 60 * 1000;
+  if (timeWindow === "3d") return 3 * 24 * 60 * 60 * 1000;
+  if (timeWindow === "1w") return 7 * 24 * 60 * 60 * 1000;
+  return null;
+}
+
+function viewportChangedEnough(previous: Viewport | null, next: Viewport): boolean {
+  if (!previous) return true;
+  const zoomDiff = Math.abs(previous.zoom - next.zoom);
+  const northDiff = Math.abs(previous.north - next.north);
+  const southDiff = Math.abs(previous.south - next.south);
+  const eastDiff = Math.abs(previous.east - next.east);
+  const westDiff = Math.abs(previous.west - next.west);
+  return zoomDiff >= 0.4 || northDiff >= 0.01 || southDiff >= 0.01 || eastDiff >= 0.01 || westDiff >= 0.01;
+}
+
+function isInsideViewport(location: [number, number], viewport: Viewport): boolean {
+  const [lat, lng] = location;
+  const latPadding = Math.max((viewport.north - viewport.south) * 0.1, 0.02);
+  const lngPadding = Math.max((viewport.east - viewport.west) * 0.1, 0.02);
+  return (
+    lat <= viewport.north + latPadding &&
+    lat >= viewport.south - latPadding &&
+    lng <= viewport.east + lngPadding &&
+    lng >= viewport.west - lngPadding
+  );
+}
+
+function scoreEventForInterests(event: EventPin, interests: string[]): number {
+  if (interests.length === 0) return 0;
+  const normalizedInterests = interests.map((item) => item.toLowerCase());
+  const interestSet = new Set(normalizedInterests);
+  const tagSet = new Set(event.tags.map((tag) => tag.toLowerCase()));
+  for (const subcategory of event.subcategories ?? []) {
+    tagSet.add(subcategory.toLowerCase());
   }
-  if (timeWindow === "any") {
-    return "anytime";
+
+  let score = 0;
+  for (const interest of interestSet) {
+    if (tagSet.has(interest)) score += 3;
+    if (event.category.toLowerCase() === interest) score += 2;
+    if (interest === "sports" && event.isSports) score += 3;
+    if (interest.includes("food") && event.category === "food") score += 2;
+    if (interest.includes("music") && event.category === "music") score += 2;
   }
-  return "tonight";
+  return score;
+}
+
+function matchesLegacyLabelWindow(timeLabel: string, now: Date, targetWindow: TimeWindow): boolean {
+  const normalized = timeLabel.toLowerCase();
+  if (targetWindow === "any") return true;
+  if (targetWindow === "3h" || targetWindow === "12h") {
+    if (normalized.includes("today") || normalized.includes("tonight")) {
+      const hour = getFirstHourFromTimeLabel(timeLabel);
+      if (hour === null) return true;
+      const eventDate = new Date(now);
+      eventDate.setHours(hour, 0, 0, 0);
+      const diffMs = eventDate.getTime() - now.getTime();
+      const maxMs = targetWindow === "3h" ? 3 * 60 * 60 * 1000 : 12 * 60 * 60 * 1000;
+      return diffMs >= 0 && diffMs <= maxMs;
+    }
+    return false;
+  }
+  if (targetWindow === "1d") return isTodayLabel(timeLabel, now);
+  if (targetWindow === "3d") return normalized.includes("today") || normalized.includes("tomorrow") || normalized.includes("this week");
+  if (targetWindow === "1w") return true;
+  return true;
+}
+
+function matchesTimeWindow(event: EventPin, timeWindow: TimeWindow, now: Date): boolean {
+  const windowMs = timeWindowToMs(timeWindow);
+  if (windowMs === null) return true;
+  if (event.startAtIso) {
+    const eventMs = new Date(event.startAtIso).getTime();
+    if (Number.isNaN(eventMs)) {
+      return matchesLegacyLabelWindow(event.timeLabel, now, timeWindow);
+    }
+    const diff = eventMs - now.getTime();
+    return diff >= 0 && diff <= windowMs;
+  }
+  return matchesLegacyLabelWindow(event.timeLabel, now, timeWindow);
 }
 
 function toTwentyFourHour(hourText: string, suffixText: string): number {
@@ -150,58 +246,45 @@ function isTodayLabel(label: string, now: Date): boolean {
   );
 }
 
-function matchesTimeWindow(timeLabel: string, timeWindow: TimeWindow, now: Date): boolean {
-  if (timeWindow === "any") {
-    return true;
-  }
-
-  const normalized = timeLabel.toLowerCase();
-  const hasLooseScheduleToken =
-    normalized.includes("open this week") ||
-    normalized.includes("operating this week") ||
-    normalized.includes("scheduled tours") ||
-    normalized.includes("daytime") ||
-    normalized.includes("race-day") ||
-    normalized.includes("onwards");
-
-  if (timeWindow === "today") {
-    return isTodayLabel(timeLabel, now) || hasLooseScheduleToken;
-  }
-
-  if (normalized.includes("tonight")) {
-    return true;
-  }
-
-  if (!isTodayLabel(timeLabel, now)) {
-    return false;
-  }
-
-  const hour = getFirstHourFromTimeLabel(timeLabel);
-  if (hour !== null) {
-    return hour >= 17;
-  }
-
-  return normalized.includes("pm") || normalized.includes("evening") || normalized.includes("night");
-}
-
 export default function HomePage() {
   const [selectedCategory, setSelectedCategory] = useState<Category | "all">("all");
+  const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>("recommended");
   const [selectedEvent, setSelectedEvent] = useState<EventPin | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [radiusKm, setRadiusKm] = useState(DEFAULT_RADIUS_KM);
-  const [timeWindow, setTimeWindow] = useState<TimeWindow>("tonight");
+  const [isRadiusEnabled, setIsRadiusEnabled] = useState(false);
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>("1d");
+  const [sportsFilter, setSportsFilter] = useState<SportsFilter>("all");
+  const [alcoholFilter, setAlcoholFilter] = useState<AlcoholFilter>("all");
+  const [priceFilter, setPriceFilter] = useState<PriceFilter>("all");
+  const [subcategoryFilter, setSubcategoryFilter] = useState("all");
   const [openDiscoverControl, setOpenDiscoverControl] = useState<"radius" | "time" | null>(null);
   const [locationMode, setLocationMode] = useState<"current" | "pick">("current");
   const [events, setEvents] = useState<EventPin[]>([]);
   const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [userInterests, setUserInterests] = useState<string[]>([]);
   const [attendanceByEventId, setAttendanceByEventId] = useState<Record<string, string>>({});
   const [attendanceVisibilityByEventId, setAttendanceVisibilityByEventId] = useState<Record<string, string>>({});
+  const [friendAttendanceByEventId, setFriendAttendanceByEventId] = useState<
+    Record<
+      string,
+      Array<{
+        user_id: string;
+        username: string | null;
+        display_name: string | null;
+        position: number;
+        total_visible: number;
+        is_close_friend: boolean;
+      }>
+    >
+  >({});
+  const [viewport, setViewport] = useState<Viewport | null>(null);
   const [savedEventIds, setSavedEventIds] = useState<Set<string>>(new Set());
   const [userLocation, setUserLocation] = useState<[number, number]>(DEFAULT_LOCATION);
   const [locationLabel, setLocationLabel] = useState("locating you...");
-  const [showRadiusIndicator, setShowRadiusIndicator] = useState(true);
   const [isLocationReady, setIsLocationReady] = useState(false);
   const [sheetImageLoadError, setSheetImageLoadError] = useState(false);
+  const friendOverlayDebounceRef = useRef<number | null>(null);
   const [, startTransition] = useTransition();
 
   const syncCurrentLocation = useCallback(() => {
@@ -261,6 +344,19 @@ export default function HomePage() {
       setAuthUserId(data.session?.user?.id ?? null);
     });
   }, []);
+
+  useEffect(() => {
+    const client = getSupabaseBrowserClient();
+    if (!client || !authUserId) return;
+    client
+      .from("profiles")
+      .select("interests")
+      .eq("id", authUserId)
+      .maybeSingle()
+      .then(({ data }) => {
+        setUserInterests(Array.isArray(data?.interests) ? data.interests : []);
+      });
+  }, [authUserId]);
 
   useEffect(() => {
     syncCurrentLocation();
@@ -356,7 +452,7 @@ export default function HomePage() {
   const setAttendance = async (
     eventId: string,
     status: "interested" | "going" | "not_going" | "checked_in",
-    visibility: "public" | "friends" | "close_friends" | "only_me" | "ghost" = "friends",
+    visibility: "public" | "friends" | "close_friends" | "only_me" = "friends",
   ) => {
     const client = getSupabaseBrowserClient();
     if (!client || !authUserId) {
@@ -471,20 +567,130 @@ export default function HomePage() {
   }, [categoryFilteredEvents, searchQuery]);
 
   const now = useMemo(() => new Date(), []);
+  const allSubcategories = useMemo(() => {
+    const values = new Set<string>();
+    for (const event of events) {
+      for (const subcategory of event.subcategories ?? []) {
+        if (subcategory.trim()) values.add(subcategory.trim().toLowerCase());
+      }
+    }
+    return Array.from(values).slice(0, 40);
+  }, [events]);
+
+  const metadataFilteredEvents = useMemo(
+    () =>
+      searchedEvents.filter((event) => {
+        if (sportsFilter === "sports_only" && !event.isSports) return false;
+        if (alcoholFilter !== "all") {
+          if (alcoholFilter === "alcoholic" && event.alcoholPolicy !== "alcoholic" && event.alcoholPolicy !== "mixed") {
+            return false;
+          }
+          if (alcoholFilter === "non_alcoholic" && event.alcoholPolicy !== "non_alcoholic") {
+            return false;
+          }
+        }
+        if (priceFilter !== "all" && event.priceTier !== priceFilter) return false;
+        if (subcategoryFilter !== "all") {
+          const subs = (event.subcategories ?? []).map((value) => value.toLowerCase());
+          if (!subs.includes(subcategoryFilter.toLowerCase())) return false;
+        }
+        return true;
+      }),
+    [searchedEvents, sportsFilter, alcoholFilter, priceFilter, subcategoryFilter],
+  );
+
   const timeWindowIndex = TIME_WINDOWS.indexOf(timeWindow);
   const radiusSliderProgress = ((radiusKm - MIN_RADIUS_KM) / (MAX_RADIUS_KM - MIN_RADIUS_KM)) * 100;
   const timeSliderProgress = (timeWindowIndex / (TIME_WINDOWS.length - 1)) * 100;
   const isEventSheetOpen = Boolean(selectedEvent);
-  const filteredEvents = useMemo(
-    () =>
-      searchedEvents.filter((event) => {
-        const withinRadius = distanceInKm(event.location, userLocation) <= radiusKm;
-        if (!withinRadius) {
-          return false;
-        }
-        return matchesTimeWindow(event.timeLabel, timeWindow, now);
-      }),
-    [searchedEvents, userLocation, radiusKm, timeWindow, now],
+  const filteredEvents = useMemo(() => {
+    const baseTimeFiltered = metadataFilteredEvents.filter((event) => matchesTimeWindow(event, timeWindow, now));
+    const radiusApplied = isRadiusEnabled
+      ? baseTimeFiltered.filter((event) => distanceInKm(event.location, userLocation) <= radiusKm)
+      : baseTimeFiltered;
+    const viewportApplied =
+      FEATURE_FLAGS.viewportQueryMode && !isRadiusEnabled && viewport
+        ? radiusApplied.filter((event) => isInsideViewport(event.location, viewport))
+        : radiusApplied;
+    const recommendedApplied =
+      FEATURE_FLAGS.recommendedMode && discoveryMode === "recommended"
+        ? [...viewportApplied].sort((left, right) => {
+            const scoreDiff = scoreEventForInterests(right, userInterests) - scoreEventForInterests(left, userInterests);
+            if (scoreDiff !== 0) return scoreDiff;
+            if (right.startAtIso && left.startAtIso) {
+              return new Date(left.startAtIso).getTime() - new Date(right.startAtIso).getTime();
+            }
+            return right.title.localeCompare(left.title);
+          })
+        : viewportApplied;
+    return recommendedApplied;
+  }, [
+    metadataFilteredEvents,
+    timeWindow,
+    now,
+    isRadiusEnabled,
+    userLocation,
+    radiusKm,
+    viewport,
+    discoveryMode,
+    userInterests,
+  ]);
+
+  useEffect(() => {
+    if (!FEATURE_FLAGS.friendAttendanceOverlay) return;
+    if (!authUserId || filteredEvents.length === 0) {
+      setFriendAttendanceByEventId({});
+      return;
+    }
+    if (friendOverlayDebounceRef.current) {
+      window.clearTimeout(friendOverlayDebounceRef.current);
+    }
+    friendOverlayDebounceRef.current = window.setTimeout(() => {
+      const client = getSupabaseBrowserClient();
+      if (!client) return;
+      const eventIds = filteredEvents.slice(0, 80).map((event) => event.id);
+      client
+        .rpc("app_list_event_friend_attendance", {
+          event_ids: eventIds,
+          max_per_event: 4,
+          statuses: ["going", "checked_in"],
+        })
+        .then(({ data, error }) => {
+          if (error) {
+            console.error("[friend-attendance] failed", error);
+            return;
+          }
+          const grouped: Record<string, Array<(typeof friendAttendanceByEventId)[string][number]>> = {};
+          for (const row of (data ?? []) as Array<(typeof friendAttendanceByEventId)[string][number] & { event_id: string }>) {
+            if (!grouped[row.event_id]) grouped[row.event_id] = [];
+            grouped[row.event_id].push({
+              user_id: row.user_id,
+              username: row.username,
+              display_name: row.display_name,
+              position: row.position,
+              total_visible: row.total_visible,
+              is_close_friend: row.is_close_friend,
+            });
+          }
+          setFriendAttendanceByEventId(grouped);
+        });
+    }, 320);
+    return () => {
+      if (friendOverlayDebounceRef.current) {
+        window.clearTimeout(friendOverlayDebounceRef.current);
+      }
+    };
+  }, [authUserId, filteredEvents]);
+
+  const selectedEventFriends = selectedEvent ? friendAttendanceByEventId[selectedEvent.id] ?? [] : [];
+
+  const onMapViewportChange = useCallback(
+    (nextViewport: Viewport) => {
+      setViewport((currentViewport) =>
+        viewportChangedEnough(currentViewport, nextViewport) ? nextViewport : currentViewport,
+      );
+    },
+    [setViewport],
   );
 
   return (
@@ -495,10 +701,12 @@ export default function HomePage() {
           onSelectEvent={(event) => setSelectedEvent(event)}
           userLocation={userLocation}
           radiusKm={radiusKm}
-          showRadiusIndicator={showRadiusIndicator}
-          isPickingLocation={locationMode === "pick"}
+          showRadiusIndicator={isRadiusEnabled}
+          isPickingLocation={isRadiusEnabled && locationMode === "pick"}
+          friendAttendanceByEventId={friendAttendanceByEventId}
+          onViewportChange={onMapViewportChange}
           onPickLocation={(location) => {
-            if (locationMode !== "pick") {
+            if (locationMode !== "pick" || !isRadiusEnabled) {
               return;
             }
             setUserLocation(location);
@@ -546,7 +754,7 @@ export default function HomePage() {
                 <div className="pointer-events-auto max-w-full overflow-x-auto no-scrollbar">
                   <p className="inline-flex items-center gap-1 whitespace-nowrap text-[14px] font-semibold text-zinc-900 sm:text-[17px]">
                     <span>{filteredEvents.length}</span>
-                    <span>spontaneous things within</span>
+                    <span>spontaneous things in</span>
                     <button
                       type="button"
                       onClick={() =>
@@ -556,7 +764,7 @@ export default function HomePage() {
                         openDiscoverControl === "radius" ? "discover-inline-chip--active" : ""
                       }`}
                     >
-                      {formatRadiusLabel(radiusKm)}
+                      {isRadiusEnabled ? formatRadiusLabel(radiusKm) : "map view"}
                     </button>
                     <button
                       type="button"
@@ -588,26 +796,61 @@ export default function HomePage() {
                   </Button>
                   <Button
                     type="button"
-                    variant={showRadiusIndicator ? "default" : "outline"}
+                    variant={isRadiusEnabled ? "default" : "outline"}
                     size="sm"
-                    onClick={() => setShowRadiusIndicator((current) => !current)}
+                    onClick={() => {
+                      setIsRadiusEnabled((current) => {
+                        const next = !current;
+                        if (!next) {
+                          setLocationMode("current");
+                        }
+                        return next;
+                      });
+                    }}
                     className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      showRadiusIndicator ? "icon-filter-btn--active" : ""
+                      isRadiusEnabled ? "icon-filter-btn--active" : ""
                     }`}
                   >
-                    radius {showRadiusIndicator ? "on" : "off"}
+                    radius {isRadiusEnabled ? "on" : "off"}
                   </Button>
                   <Button
                     type="button"
                     variant={locationMode === "pick" ? "default" : "outline"}
                     size="sm"
-                    onClick={() => setLocationMode("pick")}
+                    onClick={() => {
+                      if (!isRadiusEnabled) return;
+                      setLocationMode("pick");
+                    }}
+                    disabled={!isRadiusEnabled}
                     className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      locationMode === "pick" ? "icon-filter-btn--active" : ""
+                      locationMode === "pick" && isRadiusEnabled ? "icon-filter-btn--active" : ""
                     }`}
                   >
                     <Crosshair className="mr-1 h-3.5 w-3.5" />
                     pick
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={discoveryMode === "recommended" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setDiscoveryMode("recommended")}
+                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
+                      discoveryMode === "recommended" ? "icon-filter-btn--active" : ""
+                    }`}
+                  >
+                    <Sparkles className="mr-1 h-3.5 w-3.5" />
+                    recommended
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={discoveryMode === "all" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setDiscoveryMode("all")}
+                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
+                      discoveryMode === "all" ? "icon-filter-btn--active" : ""
+                    }`}
+                  >
+                    all
                   </Button>
                 </div>
               </div>
@@ -618,17 +861,23 @@ export default function HomePage() {
                     <span className="discover-control-panel__title">range</span>
                     <span className="discover-control-panel__value">{formatRadiusLabel(radiusKm)}</span>
                   </div>
-                  <input
-                    type="range"
-                    min={MIN_RADIUS_KM}
-                    max={MAX_RADIUS_KM}
-                    step={RADIUS_STEP_KM}
-                    value={radiusKm}
-                    onChange={(event) => setRadiusKm(Number(event.target.value))}
-                    className="discover-slider"
-                    style={{ "--slider-progress": `${radiusSliderProgress}%` } as CSSProperties}
-                    aria-label="Search radius"
-                  />
+                  {isRadiusEnabled ? (
+                    <input
+                      type="range"
+                      min={MIN_RADIUS_KM}
+                      max={MAX_RADIUS_KM}
+                      step={RADIUS_STEP_KM}
+                      value={radiusKm}
+                      onChange={(event) => setRadiusKm(Number(event.target.value))}
+                      className="discover-slider"
+                      style={{ "--slider-progress": `${radiusSliderProgress}%` } as CSSProperties}
+                      aria-label="Search radius"
+                    />
+                  ) : (
+                    <p className="text-xs text-zinc-600">
+                      Radius is off by default. Turn it on to restrict feed and enable pick mode.
+                    </p>
+                  )}
                 </div>
               ) : null}
 
@@ -646,7 +895,7 @@ export default function HomePage() {
                     value={timeWindowIndex}
                     onChange={(event) => {
                       const index = Number(event.target.value);
-                      const nextWindow = TIME_WINDOWS[index] ?? "tonight";
+                      const nextWindow = TIME_WINDOWS[index] ?? "1d";
                       setTimeWindow(nextWindow);
                     }}
                     className="discover-slider"
@@ -654,9 +903,12 @@ export default function HomePage() {
                     aria-label="Event time window"
                   />
                   <div className="discover-slider-labels">
-                    <span>tonight</span>
-                    <span>today</span>
-                    <span>anytime</span>
+                    <span>3h</span>
+                    <span>12h</span>
+                    <span>1d</span>
+                    <span>3d</span>
+                    <span>1w</span>
+                    <span>any</span>
                   </div>
                 </div>
               ) : null}
@@ -665,9 +917,52 @@ export default function HomePage() {
                 <Badge variant="secondary" className="glass-badge bg-white/65 text-zinc-700">
                   {locationLabel}
                 </Badge>
-                {locationMode === "pick" ? (
+                {locationMode === "pick" && isRadiusEnabled ? (
                   <p className="mt-1.5 text-[11px] text-zinc-600">pick mode: tap anywhere on the map to pin.</p>
                 ) : null}
+              </div>
+
+              <div className="pointer-events-auto grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                <select
+                  value={sportsFilter}
+                  onChange={(event) => setSportsFilter(event.target.value as SportsFilter)}
+                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
+                >
+                  <option value="all">all events</option>
+                  <option value="sports_only">sports only</option>
+                </select>
+                <select
+                  value={alcoholFilter}
+                  onChange={(event) => setAlcoholFilter(event.target.value as AlcoholFilter)}
+                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
+                >
+                  <option value="all">alcohol: all</option>
+                  <option value="alcoholic">alcoholic</option>
+                  <option value="non_alcoholic">non alcoholic</option>
+                </select>
+                <select
+                  value={priceFilter}
+                  onChange={(event) => setPriceFilter(event.target.value as PriceFilter)}
+                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
+                >
+                  <option value="all">price: all</option>
+                  <option value="free">free</option>
+                  <option value="budget">budget</option>
+                  <option value="mid">mid</option>
+                  <option value="premium">premium</option>
+                </select>
+                <select
+                  value={subcategoryFilter}
+                  onChange={(event) => setSubcategoryFilter(event.target.value)}
+                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
+                >
+                  <option value="all">all tags</option>
+                  {allSubcategories.map((subcategory) => (
+                    <option key={subcategory} value={subcategory}>
+                      {subcategory}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="no-scrollbar flex snap-x snap-mandatory gap-1.5 overflow-x-auto pb-1 pt-0.5 lg:hidden">
@@ -841,18 +1136,41 @@ export default function HomePage() {
                 >
                   Check in
                 </Button>
-                {attendanceByEventId[selectedEvent.id] === "going" ||
-                attendanceByEventId[selectedEvent.id] === "checked_in" ? (
-                  <Button
-                    type="button"
-                    onClick={() => void setAttendance(selectedEvent.id, "going", "ghost")}
-                    variant="secondary"
-                    className="h-10"
-                  >
-                    Ghost Mode
-                  </Button>
-                ) : null}
               </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Button type="button" onClick={() => void setAttendance(selectedEvent.id, "going", "public")} variant="outline" className="h-9 text-xs">
+                  Public
+                </Button>
+                <Button type="button" onClick={() => void setAttendance(selectedEvent.id, "going", "friends")} variant="outline" className="h-9 text-xs">
+                  Friends
+                </Button>
+                <Button type="button" onClick={() => void setAttendance(selectedEvent.id, "going", "close_friends")} variant="outline" className="h-9 text-xs">
+                  Close friends
+                </Button>
+                <Button type="button" onClick={() => void setAttendance(selectedEvent.id, "going", "only_me")} variant="outline" className="h-9 text-xs">
+                  Only me
+                </Button>
+              </div>
+              <p className="mt-4 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">friends going</p>
+              {selectedEventFriends.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {selectedEventFriends.map((friend) => (
+                    <Link
+                      key={`${friend.user_id}-${friend.position}`}
+                      href={friend.username ? `/profile/${friend.username}` : "/friends"}
+                      className={`rounded-full border px-3 py-1 text-xs ${
+                        friend.is_close_friend
+                          ? "border-amber-400 bg-amber-100 text-amber-900"
+                          : "border-zinc-300 bg-white text-zinc-700"
+                      }`}
+                    >
+                      {friend.display_name?.trim() || friend.username || "friend"}
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-zinc-600">No visible friends marked as going yet.</p>
+              )}
               <p className="mt-4 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">event</p>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <Button

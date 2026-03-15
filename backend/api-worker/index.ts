@@ -215,6 +215,27 @@ export default {
       }));
     }
 
+    if (url.pathname === "/friend/remove") {
+      return routeRpc(request, env, token, "app_remove_friend", (body) => ({
+        target_user_id: String(body.targetUserId ?? ""),
+      }));
+    }
+
+    if (url.pathname === "/friend/close") {
+      return routeRpc(request, env, token, "app_set_close_friend", (body) => ({
+        target_user_id: String(body.targetUserId ?? ""),
+        make_close: Boolean(body.makeClose),
+      }));
+    }
+
+    if (url.pathname === "/friend/attendance") {
+      return routeRpc(request, env, token, "app_list_event_friend_attendance", (body) => ({
+        event_ids: Array.isArray(body.eventIds) ? body.eventIds : [],
+        max_per_event: Number(body.maxPerEvent ?? 4),
+        statuses: Array.isArray(body.statuses) ? body.statuses : ["going", "checked_in"],
+      }));
+    }
+
     if (url.pathname === "/attendance/set") {
       return routeRpc(request, env, token, "app_set_attendance", (body) => ({
         event_uuid: String(body.eventId ?? ""),

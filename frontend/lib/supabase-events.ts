@@ -14,6 +14,11 @@ type SupabaseEventRow = {
   spontaneity_score: number | null;
   crowd_label: string | null;
   tags: string[] | null;
+  start_at: string | null;
+  price_tier: "free" | "budget" | "mid" | "premium" | "unknown" | null;
+  alcohol_policy: "alcoholic" | "non_alcoholic" | "mixed" | "unknown" | null;
+  is_sports: boolean | null;
+  subcategories: string[] | null;
   created_at: string;
   event_crowd_forecasts?: {
     forecast_label: string;
@@ -159,6 +164,7 @@ function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
     venue: row.venue ?? "Venue TBA",
     timeLabel: row.time_label ?? "Happening soon",
     description: row.description ?? "",
+    startAtIso: row.start_at ?? undefined,
     sourceUrl: row.source_url ?? undefined,
     photoUrl: row.photo_url ?? EVENT_PHOTO_FALLBACK,
     location: parseLocation(row.location) ?? fallbackLocation(index),
@@ -166,6 +172,10 @@ function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
     spontaneityScore: row.spontaneity_score ?? 70,
     crowdLabel: forecastLabel ?? normalizeCrowdLabel(row.crowd_label),
     tags: row.tags?.filter(Boolean) ?? [],
+    priceTier: row.price_tier ?? "unknown",
+    alcoholPolicy: row.alcohol_policy ?? "unknown",
+    isSports: row.is_sports ?? false,
+    subcategories: row.subcategories?.filter(Boolean) ?? [],
   };
 }
 
@@ -173,7 +183,7 @@ export async function fetchEventsFromSupabase(client: SupabaseClient): Promise<E
   const { data, error } = await client
     .from("events")
     .select(
-      "id,title,venue,time_label,description,source_url,photo_url,location,category,spontaneity_score,crowd_label,tags,created_at,event_crowd_forecasts(forecast_label,confidence)",
+      "id,title,venue,time_label,start_at,description,source_url,photo_url,location,category,spontaneity_score,crowd_label,tags,price_tier,alcohol_policy,is_sports,subcategories,created_at,event_crowd_forecasts(forecast_label,confidence)",
     )
     .order("created_at", { ascending: false })
     .limit(200)
