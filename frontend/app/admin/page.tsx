@@ -24,13 +24,61 @@ type ReportRow = {
   status: string;
 };
 
+type AdminEventRow = {
+  id: string;
+  title: string;
+  venue: string | null;
+  time_label: string | null;
+  category: string | null;
+  source_url: string | null;
+  location: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  tags: string[] | null;
+  is_hidden: boolean;
+  created_by: string | null;
+};
+
+type EventDraft = {
+  title: string;
+  venue: string;
+  timeLabel: string;
+  category: string;
+  sourceUrl: string;
+  location: string;
+  startAt: string;
+  endAt: string;
+  tags: string;
+};
+
+function parseTags(rawTags: string): string[] {
+  return rawTags
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
 function AdminInner() {
   const client = getSupabaseBrowserClient();
   const [isAdmin, setIsAdmin] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [requests, setRequests] = useState<VerificationRequest[]>([]);
   const [reports, setReports] = useState<ReportRow[]>([]);
+  const [events, setEvents] = useState<AdminEventRow[]>([]);
   const [message, setMessage] = useState("");
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [eventDraft, setEventDraft] = useState<EventDraft>({
+    title: "",
+    venue: "",
+    timeLabel: "",
+    category: "social",
+    sourceUrl: "",
+    location: "",
+    startAt: "",
+    endAt: "",
+    tags: "",
+  });
 
   const loadData = useCallback(async (uid: string) => {
     if (!client) return;
@@ -38,7 +86,7 @@ function AdminInner() {
     setIsAdmin(admin);
     if (!admin) return;
 
-    const [{ data: reqData }, { data: reportData }] = await Promise.all([
+    const [{ data: reqData }, { data: reportData }, { data: eventData }] = await Promise.all([
       client
         .from("organizer_verification_requests")
         .select("id,user_id,organization_name,organization_email,status")
@@ -49,10 +97,16 @@ function AdminInner() {
         .select("id,reporter_id,target_type,target_user_id,target_event_id,reason,status")
         .in("status", ["open", "reviewing"])
         .order("created_at", { ascending: true }),
+      client
+        .from("events")
+        .select("id,title,venue,time_label,category,source_url,location,start_at,end_at,tags,is_hidden,created_by")
+        .order("created_at", { ascending: false })
+        .limit(150),
     ]);
 
     setRequests((reqData as VerificationRequest[] | null) ?? []);
     setReports((reportData as ReportRow[] | null) ?? []);
+    setEvents((eventData as AdminEventRow[] | null) ?? []);
   }, [client]);
 
   useEffect(() => {
@@ -101,6 +155,90 @@ function AdminInner() {
     await loadData(userId);
   };
 
+  const beginEdit = (eventRow: AdminEventRow) => {
+    setEditingEventId(eventRow.id);
+    setEventDraft({
+      title: eventRow.title,
+      venue: eventRow.venue ?? "",
+      timeLabel: eventRow.time_label ?? "",
+      category: eventRow.category ?? "social",
+      sourceUrl: eventRow.source_url ?? "",
+      location: eventRow.location ?? "",
+      startAt: eventRow.start_at ? eventRow.start_at.slice(0, 16) : "",
+      endAt: eventRow.end_at ? eventRow.end_at.slice(0, 16) : "",
+      tags: (eventRow.tags ?? []).join(", "),
+    });
+  };
+
+  const saveEventEdit = async (eventId: string) => {
+    if (!client || !userId) return;
+    const { error } = await client
+      .from("events")
+      .update({
+        title: eventDraft.title,
+        venue: eventDraft.venue || null,
+        time_label: eventDraft.timeLabel || null,
+        category: eventDraft.category,
+        source_url: eventDraft.sourceUrl || null,
+        location: eventDraft.location || null,
+        start_at: eventDraft.startAt || null,
+        end_at: eventDraft.endAt || null,
+        tags: parseTags(eventDraft.tags),
+      })
+      .eq("id", eventId);
+    if (error) {
+      setMessage(`Error: ${error.message}`);
+      return;
+    }
+    await client.from("moderation_actions").insert({
+      admin_id: userId,
+      action_type: "edit_event",
+      target_event_id: eventId,
+      notes: "Event updated from admin dashboard.",
+    });
+    setEditingEventId(null);
+    setMessage("Event updated.");
+    await loadData(userId);
+  };
+
+  const toggleHidden = async (eventRow: AdminEventRow) => {
+    if (!client || !userId) return;
+    const nextHidden = !eventRow.is_hidden;
+    const { error } = await client.from("events").update({ is_hidden: nextHidden }).eq("id", eventRow.id);
+    if (error) {
+      setMessage(`Error: ${error.message}`);
+      return;
+    }
+    await client.from("moderation_actions").insert({
+      admin_id: userId,
+      action_type: nextHidden ? "remove_event" : "restore_event",
+      target_event_id: eventRow.id,
+      notes: nextHidden ? "Event hidden from public feeds." : "Event restored to public feeds.",
+    });
+    setMessage(nextHidden ? "Event hidden." : "Event restored.");
+    await loadData(userId);
+  };
+
+  const deleteEvent = async (eventRow: AdminEventRow) => {
+    if (!client || !userId) return;
+    await client.from("moderation_actions").insert({
+      admin_id: userId,
+      action_type: "remove_event",
+      target_event_id: eventRow.id,
+      notes: "Event hard-deleted from admin dashboard.",
+    });
+    const { error } = await client.from("events").delete().eq("id", eventRow.id);
+    if (error) {
+      setMessage(`Error: ${error.message}`);
+      return;
+    }
+    if (editingEventId === eventRow.id) {
+      setEditingEventId(null);
+    }
+    setMessage("Event deleted.");
+    await loadData(userId);
+  };
+
   const banUser = async (targetUserId: string | null) => {
     if (!client || !userId || !targetUserId) return;
     const { error } = await client.from("user_bans").insert({
@@ -142,6 +280,134 @@ function AdminInner() {
           </Link>
         </div>
         {message ? <p className="mt-2 text-sm text-zinc-700">{message}</p> : null}
+
+        <section className="mt-5">
+          <h2 className="text-lg font-semibold text-zinc-900">Event moderation</h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Review organizer and scraped events, edit details, hide/unhide from public map, or hard delete.
+          </p>
+          <div className="mt-2 space-y-2">
+            {events.map((eventRow) => (
+              <article key={eventRow.id} className="rounded-xl border border-zinc-200 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold text-zinc-900">{eventRow.title}</p>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs ${
+                      eventRow.is_hidden ? "bg-zinc-200 text-zinc-700" : "bg-emerald-100 text-emerald-800"
+                    }`}
+                  >
+                    {eventRow.is_hidden ? "Hidden" : "Visible"}
+                  </span>
+                </div>
+                <p className="text-sm text-zinc-600">
+                  {eventRow.venue ?? "Venue TBA"} | {eventRow.time_label ?? "Time TBA"} | {eventRow.category ?? "social"}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Creator: {eventRow.created_by ?? "unknown"} | Tags:{" "}
+                  {(eventRow.tags ?? []).length > 0 ? (eventRow.tags ?? []).join(", ") : "none"}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => beginEdit(eventRow)}
+                    className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-700"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void toggleHidden(eventRow)}
+                    className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-700"
+                  >
+                    {eventRow.is_hidden ? "Unhide" : "Hide"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteEvent(eventRow)}
+                    className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-700"
+                  >
+                    Delete
+                  </button>
+                </div>
+                {editingEventId === eventRow.id ? (
+                  <div className="mt-3 grid gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 md:grid-cols-2">
+                    <input
+                      value={eventDraft.title}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, title: event.target.value }))}
+                      placeholder="Event title"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      value={eventDraft.venue}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, venue: event.target.value }))}
+                      placeholder="Venue"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      value={eventDraft.timeLabel}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, timeLabel: event.target.value }))}
+                      placeholder="Time label"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      value={eventDraft.category}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, category: event.target.value }))}
+                      placeholder="Category"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      value={eventDraft.sourceUrl}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, sourceUrl: event.target.value }))}
+                      placeholder="Source URL"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      value={eventDraft.location}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, location: event.target.value }))}
+                      placeholder="Lat,Lng"
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      type="datetime-local"
+                      value={eventDraft.startAt}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, startAt: event.target.value }))}
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      type="datetime-local"
+                      value={eventDraft.endAt}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, endAt: event.target.value }))}
+                      className="rounded-xl border border-zinc-300 px-3 py-2"
+                    />
+                    <input
+                      value={eventDraft.tags}
+                      onChange={(event) => setEventDraft((current) => ({ ...current, tags: event.target.value }))}
+                      placeholder="Tags (comma separated)"
+                      className="rounded-xl border border-zinc-300 px-3 py-2 md:col-span-2"
+                    />
+                    <div className="flex gap-2 md:col-span-2">
+                      <button
+                        type="button"
+                        onClick={() => void saveEventEdit(eventRow.id)}
+                        className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-700"
+                      >
+                        Save changes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingEventId(null)}
+                        className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-700"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+            {events.length === 0 ? <p className="text-sm text-zinc-600">No events to moderate yet.</p> : null}
+          </div>
+        </section>
 
         <section className="mt-5">
           <h2 className="text-lg font-semibold text-zinc-900">Organizer verification requests</h2>
