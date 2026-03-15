@@ -137,7 +137,7 @@ function eventIcon(event: EventPin) {
         <div class="photo-pin-card">
           <img src="${event.photoUrl}" alt="${safeTitle}" loading="lazy" decoding="async" />
           <div class="photo-pin-overlay"></div>
-          <span class="photo-pin-badge"><img src="${categoryIcon[event.category]}" alt="" loading="lazy" decoding="async" /></span>
+          <img class="photo-pin-icon" src="${categoryIcon[event.category]}" alt="" loading="lazy" decoding="async" />
         </div>
         <div class="photo-pin-tip"></div>
       </div>

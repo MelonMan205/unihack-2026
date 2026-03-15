@@ -1,4 +1,3 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="18" fill="#7c2d12"/>
-  <text x="32" y="40" text-anchor="middle" font-size="28" font-family="Segoe UI Emoji, Apple Color Emoji, sans-serif"><}</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <path d="M20 14v17a4 4 0 1 0 8 0V14h3v17a7 7 0 1 1-14 0V14h3zm20 0h3v14h4V14h3v36h-3V34h-4v16h-3V14z" fill="#fb923c"/>
 </svg>

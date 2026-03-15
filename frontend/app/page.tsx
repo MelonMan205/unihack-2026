@@ -1410,6 +1410,7 @@ export default function HomePage() {
                     alt={selectedEvent.title}
                     width={1200}
                     height={640}
+                    unoptimized
                     className="h-44 w-full object-cover sm:h-56"
                     onError={() => setSheetImageLoadError(true)}
                   />
