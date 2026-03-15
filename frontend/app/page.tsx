@@ -15,6 +15,7 @@ import {
 import {
   Crosshair,
   ExternalLink,
+  LayoutDashboard,
   MapPin,
   Search,
   Sparkles,
@@ -29,6 +30,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { getUserRoles } from "@/lib/roles";
 import { fetchEventsFromSupabase } from "@/lib/supabase-events";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { DEFAULT_LOCATION, type Category, type EventPin } from "@/mock/events";
@@ -52,7 +54,27 @@ type DiscoveryMode = "recommended" | "all";
 type SportsFilter = "all" | "sports_only";
 type AlcoholFilter = "all" | "alcoholic" | "non_alcoholic";
 type PriceFilter = "all" | "free" | "budget" | "mid" | "premium";
+type ViewMode = "map" | "dashboard";
 type Viewport = { north: number; south: number; east: number; west: number; zoom: number };
+
+type GoingEventJoinRow = {
+  id: string;
+  title: string | null;
+  venue: string | null;
+  time_label: string | null;
+  source_url: string | null;
+  start_at: string | null;
+  tags: string[] | null;
+  subcategories: string[] | null;
+};
+
+type GoingAttendanceRow = {
+  event_id: string;
+  status: string;
+  visibility: string;
+  updated_at: string;
+  events: GoingEventJoinRow | GoingEventJoinRow[] | null;
+};
 
 const DEFAULT_RADIUS_KM = 1;
 const MIN_RADIUS_KM = 0.5;
@@ -146,6 +168,19 @@ function isInsideViewport(location: [number, number], viewport: Viewport): boole
   );
 }
 
+function collectEventTags(event: EventPin): string[] {
+  const values = new Set<string>();
+  for (const tag of event.tags) {
+    const normalized = tag.trim().toLowerCase();
+    if (normalized) values.add(normalized);
+  }
+  for (const subcategory of event.subcategories ?? []) {
+    const normalized = subcategory.trim().toLowerCase();
+    if (normalized) values.add(normalized);
+  }
+  return Array.from(values);
+}
+
 function scoreEventForInterests(event: EventPin, interests: string[]): number {
   if (interests.length === 0) return 0;
   const normalizedInterests = interests.map((item) => item.toLowerCase());
@@ -232,6 +267,7 @@ function isTodayLabel(label: string, now: Date): boolean {
 }
 
 export default function HomePage() {
+  const [viewMode, setViewMode] = useState<ViewMode>("map");
   const [selectedCategory, setSelectedCategory] = useState<Category | "all">("all");
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>("recommended");
   const [selectedEvent, setSelectedEvent] = useState<EventPin | null>(null);
@@ -247,6 +283,7 @@ export default function HomePage() {
   const [locationMode, setLocationMode] = useState<"current" | "pick">("current");
   const [events, setEvents] = useState<EventPin[]>([]);
   const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [userRoles, setUserRoles] = useState<string[]>([]);
   const [userInterests, setUserInterests] = useState<string[]>([]);
   const [attendanceByEventId, setAttendanceByEventId] = useState<Record<string, string>>({});
   const [attendanceVisibilityByEventId, setAttendanceVisibilityByEventId] = useState<Record<string, string>>({});
@@ -265,6 +302,7 @@ export default function HomePage() {
   >({});
   const [viewport, setViewport] = useState<Viewport | null>(null);
   const [savedEventIds, setSavedEventIds] = useState<Set<string>>(new Set());
+  const [goingEvents, setGoingEvents] = useState<GoingAttendanceRow[]>([]);
   const [userLocation, setUserLocation] = useState<[number, number]>(DEFAULT_LOCATION);
   const [locationLabel, setLocationLabel] = useState("locating you...");
   const [isLocationReady, setIsLocationReady] = useState(false);
@@ -330,6 +368,17 @@ export default function HomePage() {
       setAuthUserId(data.session?.user?.id ?? null);
     });
   }, []);
+
+  useEffect(() => {
+    const client = getSupabaseBrowserClient();
+    if (!client || !authUserId) {
+      setUserRoles([]);
+      return;
+    }
+    getUserRoles(client, authUserId)
+      .then((roles) => setUserRoles(roles))
+      .catch(() => setUserRoles([]));
+  }, [authUserId]);
 
   useEffect(() => {
     const client = getSupabaseBrowserClient();
@@ -408,22 +457,36 @@ export default function HomePage() {
   useEffect(() => {
     const client = getSupabaseBrowserClient();
     if (!client || !authUserId) {
+      setGoingEvents([]);
       return;
     }
 
     client
       .from("event_attendance")
-      .select("event_id,status,visibility")
+      .select("event_id,status,visibility,updated_at,events(id,title,venue,time_label,source_url,start_at,tags,subcategories)")
       .eq("user_id", authUserId)
       .then(({ data }) => {
         const nextStatuses: Record<string, string> = {};
         const nextVisibility: Record<string, string> = {};
-        for (const row of data ?? []) {
+        const nextGoingEvents: GoingAttendanceRow[] = [];
+        for (const row of (data ?? []) as GoingAttendanceRow[]) {
           nextStatuses[row.event_id] = row.status;
           nextVisibility[row.event_id] = row.visibility;
+          if (row.status === "going" || row.status === "checked_in") {
+            nextGoingEvents.push(row);
+          }
         }
+        nextGoingEvents.sort((left, right) => {
+          const leftEvent = Array.isArray(left.events) ? left.events[0] : left.events;
+          const rightEvent = Array.isArray(right.events) ? right.events[0] : right.events;
+          const leftStart = leftEvent?.start_at ? new Date(leftEvent.start_at).getTime() : Number.POSITIVE_INFINITY;
+          const rightStart = rightEvent?.start_at ? new Date(rightEvent.start_at).getTime() : Number.POSITIVE_INFINITY;
+          if (leftStart !== rightStart) return leftStart - rightStart;
+          return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+        });
         setAttendanceByEventId(nextStatuses);
         setAttendanceVisibilityByEventId(nextVisibility);
+        setGoingEvents(nextGoingEvents);
       });
 
     client
@@ -553,11 +616,11 @@ export default function HomePage() {
   }, [categoryFilteredEvents, searchQuery]);
 
   const now = useMemo(() => new Date(), []);
-  const allSubcategories = useMemo(() => {
+  const allTags = useMemo(() => {
     const values = new Set<string>();
     for (const event of events) {
-      for (const subcategory of event.subcategories ?? []) {
-        if (subcategory.trim()) values.add(subcategory.trim().toLowerCase());
+      for (const tag of collectEventTags(event)) {
+        values.add(tag);
       }
     }
     return Array.from(values).slice(0, 40);
@@ -577,8 +640,8 @@ export default function HomePage() {
         }
         if (priceFilter !== "all" && event.priceTier !== priceFilter) return false;
         if (subcategoryFilter !== "all") {
-          const subs = (event.subcategories ?? []).map((value) => value.toLowerCase());
-          if (!subs.includes(subcategoryFilter.toLowerCase())) return false;
+          const eventTags = collectEventTags(event);
+          if (!eventTags.includes(subcategoryFilter.toLowerCase())) return false;
         }
         return true;
       }),
@@ -669,6 +732,33 @@ export default function HomePage() {
   }, [authUserId, filteredEvents]);
 
   const selectedEventFriends = selectedEvent ? friendAttendanceByEventId[selectedEvent.id] ?? [] : [];
+  const isAdmin = userRoles.includes("admin");
+  const isOrganizer = userRoles.includes("organizer") || isAdmin;
+
+  const dashboardGoingEvents = useMemo(
+    () =>
+      goingEvents.map((row) => {
+        const joinedEvent = Array.isArray(row.events) ? row.events[0] : row.events;
+        const matchingMapEvent = events.find((eventItem) => eventItem.id === row.event_id);
+        return {
+          eventId: row.event_id,
+          status: row.status,
+          title: joinedEvent?.title ?? matchingMapEvent?.title ?? "Untitled event",
+          venue: joinedEvent?.venue ?? matchingMapEvent?.venue ?? "Venue TBA",
+          timeLabel: joinedEvent?.time_label ?? matchingMapEvent?.timeLabel ?? "Time TBA",
+          sourceUrl: joinedEvent?.source_url ?? matchingMapEvent?.sourceUrl ?? undefined,
+          startAt: joinedEvent?.start_at ?? matchingMapEvent?.startAtIso ?? null,
+          tags: joinedEvent?.tags?.length
+            ? joinedEvent.tags
+            : joinedEvent?.subcategories?.length
+              ? joinedEvent.subcategories
+              : matchingMapEvent
+                ? collectEventTags(matchingMapEvent)
+                : [],
+        };
+      }),
+    [goingEvents, events],
+  );
 
   const onMapViewportChange = useCallback(
     (nextViewport: Viewport) => {
@@ -756,7 +846,7 @@ export default function HomePage() {
             className="h-9 w-full rounded-[11px] border border-zinc-300 bg-white px-2 text-xs text-zinc-700"
           >
             <option value="all">All tags</option>
-            {allSubcategories.map((subcategory) => (
+            {allTags.map((subcategory) => (
               <option key={subcategory} value={subcategory}>
                 {subcategory}
               </option>
@@ -769,27 +859,111 @@ export default function HomePage() {
 
   return (
     <main className="relative h-[100dvh] min-h-[100svh] w-full overflow-hidden bg-[#eef1f5] text-zinc-900">
-      {isLocationReady ? (
-        <MapView
-          events={filteredEvents}
-          onSelectEvent={(event) => setSelectedEvent(event)}
-          userLocation={userLocation}
-          radiusKm={radiusKm}
-          showRadiusIndicator={isRadiusEnabled}
-          isPickingLocation={isRadiusEnabled && locationMode === "pick"}
-          friendAttendanceByEventId={friendAttendanceByEventId}
-          onViewportChange={onMapViewportChange}
-          onPickLocation={(location) => {
-            if (locationMode !== "pick" || !isRadiusEnabled) {
-              return;
-            }
-            setUserLocation(location);
-            setLocationLabel("pinned location");
-            setIsLocationReady(true);
-          }}
-        />
+      {viewMode === "map" ? (
+        isLocationReady ? (
+          <MapView
+            events={filteredEvents}
+            onSelectEvent={(event) => setSelectedEvent(event)}
+            userLocation={userLocation}
+            radiusKm={radiusKm}
+            showRadiusIndicator={isRadiusEnabled}
+            isPickingLocation={isRadiusEnabled && locationMode === "pick"}
+            friendAttendanceByEventId={friendAttendanceByEventId}
+            onViewportChange={onMapViewportChange}
+            onPickLocation={(location) => {
+              if (locationMode !== "pick" || !isRadiusEnabled) {
+                return;
+              }
+              setUserLocation(location);
+              setLocationLabel("pinned location");
+              setIsLocationReady(true);
+            }}
+          />
+        ) : (
+          <div className="h-[100dvh] min-h-[100svh] w-full bg-[#f8f3e8]" />
+        )
       ) : (
-        <div className="h-[100dvh] min-h-[100svh] w-full bg-[#f8f3e8]" />
+        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-44 pt-6">
+          <div className="mx-auto grid w-full max-w-5xl gap-4 px-3 sm:px-4 lg:grid-cols-[1.25fr_1fr]">
+            <Card className="glass-panel border-white/45">
+              <CardContent className="space-y-4 p-4 sm:p-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">Dashboard</p>
+                  <h2 className="mt-1 text-xl font-semibold text-zinc-900">Going Events</h2>
+                  <p className="text-sm text-zinc-600">All events you have marked as going or checked in.</p>
+                </div>
+                <div className="space-y-2">
+                  {dashboardGoingEvents.map((eventRow) => (
+                    <article key={eventRow.eventId} className="rounded-xl border border-zinc-200/80 bg-white/80 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold text-zinc-900">{eventRow.title}</p>
+                        <Badge variant="secondary" className="bg-white/70 text-zinc-700">
+                          {eventRow.status === "checked_in" ? "Checked in" : "Going"}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-zinc-600">
+                        {eventRow.venue} | {eventRow.timeLabel}
+                      </p>
+                      {eventRow.tags.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {eventRow.tags.slice(0, 4).map((tag) => (
+                            <Badge key={`${eventRow.eventId}-${tag}`} variant="outline">
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                      {eventRow.sourceUrl ? (
+                        <a
+                          href={eventRow.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-flex text-xs text-zinc-700 underline"
+                        >
+                          Open event link
+                        </a>
+                      ) : null}
+                    </article>
+                  ))}
+                  {dashboardGoingEvents.length === 0 ? (
+                    <p className="text-sm text-zinc-600">
+                      No going events yet. Open Map view and mark events as going to populate this list.
+                    </p>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="glass-panel border-white/45">
+              <CardContent className="space-y-4 p-4 sm:p-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">Discovery Snapshot</p>
+                  <h2 className="mt-1 text-xl font-semibold text-zinc-900">Filtered feed</h2>
+                  <p className="text-sm text-zinc-600">
+                    {filteredEvents.length} events match your active category, tag, and metadata filters.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  {filteredEvents.slice(0, 8).map((eventRow) => (
+                    <button
+                      type="button"
+                      key={eventRow.id}
+                      onClick={() => setSelectedEvent(eventRow)}
+                      className="w-full rounded-xl border border-zinc-200/80 bg-white/80 p-3 text-left hover:border-zinc-300"
+                    >
+                      <p className="font-medium text-zinc-900">{eventRow.title}</p>
+                      <p className="text-sm text-zinc-600">
+                        {eventRow.venue} | {eventRow.timeLabel}
+                      </p>
+                    </button>
+                  ))}
+                  {filteredEvents.length === 0 ? (
+                    <p className="text-sm text-zinc-600">No events match this filter set. Adjust tags or metadata filters.</p>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
       )}
 
       <div className="pointer-events-none absolute left-4 top-1/2 z-[1200] hidden -translate-y-1/2 lg:block">
@@ -819,33 +993,63 @@ export default function HomePage() {
             <CardContent className="flex flex-col gap-2.5 p-2.5 pt-3 sm:gap-3 sm:p-4 sm:pt-5">
               <div className="flex flex-col gap-2 pt-0.5 sm:flex-row sm:items-start sm:justify-between">
                 <div className="pointer-events-auto max-w-full overflow-x-auto no-scrollbar">
-                  <p className="inline-flex items-center gap-1 whitespace-nowrap text-[14px] font-semibold text-zinc-900 sm:text-[17px]">
-                    <span>{filteredEvents.length}</span>
-                    <span>spontaneous things in</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setOpenDiscoverControl((current) => (current === "radius" ? null : "radius"))
-                      }
-                      className={`discover-inline-chip ${
-                        openDiscoverControl === "radius" ? "discover-inline-chip--active" : ""
-                      }`}
-                    >
-                      {isRadiusEnabled ? formatRadiusLabel(radiusKm) : "map view"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setOpenDiscoverControl((current) => (current === "time" ? null : "time"))}
-                      className={`discover-inline-chip ${
-                        openDiscoverControl === "time" ? "discover-inline-chip--active" : ""
-                      }`}
-                    >
-                      {formatTimeWindowLabel(timeWindow)}
-                    </button>
-                  </p>
+                  {viewMode === "map" ? (
+                    <p className="inline-flex items-center gap-1 whitespace-nowrap text-[14px] font-semibold text-zinc-900 sm:text-[17px]">
+                      <span>{filteredEvents.length}</span>
+                      <span>spontaneous things in</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenDiscoverControl((current) => (current === "radius" ? null : "radius"))
+                        }
+                        className={`discover-inline-chip ${
+                          openDiscoverControl === "radius" ? "discover-inline-chip--active" : ""
+                        }`}
+                      >
+                        {isRadiusEnabled ? formatRadiusLabel(radiusKm) : "map view"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOpenDiscoverControl((current) => (current === "time" ? null : "time"))}
+                        className={`discover-inline-chip ${
+                          openDiscoverControl === "time" ? "discover-inline-chip--active" : ""
+                        }`}
+                      >
+                        {formatTimeWindowLabel(timeWindow)}
+                      </button>
+                    </p>
+                  ) : (
+                    <p className="inline-flex items-center gap-1 whitespace-nowrap text-[14px] font-semibold text-zinc-900 sm:text-[17px]">
+                      <LayoutDashboard className="h-4 w-4" />
+                      <span>{dashboardGoingEvents.length}</span>
+                      <span>events you are going to</span>
+                    </p>
+                  )}
                 </div>
 
                 <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
+                  <Button
+                    type="button"
+                    variant={viewMode === "map" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setViewMode("map")}
+                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
+                      viewMode === "map" ? "icon-filter-btn--active" : ""
+                    }`}
+                  >
+                    map
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={viewMode === "dashboard" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setViewMode("dashboard")}
+                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
+                      viewMode === "dashboard" ? "icon-filter-btn--active" : ""
+                    }`}
+                  >
+                    dashboard
+                  </Button>
                   <Button
                     type="button"
                     variant={locationMode === "current" ? "default" : "outline"}
@@ -857,6 +1061,7 @@ export default function HomePage() {
                     className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
                       locationMode === "current" ? "icon-filter-btn--active" : ""
                     }`}
+                    disabled={viewMode !== "map"}
                   >
                     <MapPin className="mr-1 h-3.5 w-3.5" />
                     current
@@ -877,6 +1082,7 @@ export default function HomePage() {
                     className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
                       isRadiusEnabled ? "icon-filter-btn--active" : ""
                     }`}
+                    disabled={viewMode !== "map"}
                   >
                     radius {isRadiusEnabled ? "on" : "off"}
                   </Button>
@@ -908,7 +1114,7 @@ export default function HomePage() {
                 </div>
               </div>
 
-              {openDiscoverControl === "radius" ? (
+              {viewMode === "map" && openDiscoverControl === "radius" ? (
                 <div className="pointer-events-auto discover-control-panel">
                   <div className="discover-control-panel__head">
                     <span className="discover-control-panel__title">range</span>
@@ -934,7 +1140,7 @@ export default function HomePage() {
                 </div>
               ) : null}
 
-              {openDiscoverControl === "time" ? (
+              {viewMode === "map" && openDiscoverControl === "time" ? (
                 <div className="pointer-events-auto discover-control-panel">
                   <div className="discover-control-panel__head">
                     <span className="discover-control-panel__title">time window</span>
@@ -970,7 +1176,7 @@ export default function HomePage() {
                 <Badge variant="secondary" className="glass-badge bg-white/65 text-zinc-700">
                   {locationLabel}
                 </Badge>
-                {locationMode === "pick" && isRadiusEnabled ? (
+                {viewMode === "map" && locationMode === "pick" && isRadiusEnabled ? (
                   <p className="mt-1.5 text-[11px] text-zinc-600">pick mode: tap anywhere on the map to pin.</p>
                 ) : null}
               </div>
@@ -998,6 +1204,16 @@ export default function HomePage() {
                       <Link href="/saved" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
                         saved
                       </Link>
+                      {isOrganizer ? (
+                        <Link href="/organizer" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
+                          organizer
+                        </Link>
+                      ) : null}
+                      {isAdmin ? (
+                        <Link href="/admin" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
+                          admin
+                        </Link>
+                      ) : null}
                     </>
                   ) : (
                     <Link href="/auth" className="icon-filter-btn h-9 rounded-[12px] border border-zinc-300 bg-white px-3 py-2 text-[12px] text-zinc-700 sm:h-11 sm:rounded-[14px] sm:px-4 sm:text-sm">
