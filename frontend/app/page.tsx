@@ -945,7 +945,7 @@ export default function HomePage() {
         </Card>
       </div>
       <div
-        className={`pointer-events-none absolute inset-x-0 top-[3.6rem] z-[1250] flex justify-center px-3 transition-all duration-300 ${
+        className={`pointer-events-none absolute inset-x-0 top-[4.35rem] z-[1250] flex justify-center px-3 transition-all duration-300 ${
           viewMode === "dashboard" ? "opacity-100" : "pointer-events-none -translate-y-2 opacity-0"
         }`}
       >
@@ -989,7 +989,7 @@ export default function HomePage() {
           <div className="h-[100dvh] min-h-[100svh] w-full bg-[#f8f3e8]" />
         )
       ) : (
-        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-44 pt-20">
+        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-44 pt-24">
           <div className="mx-auto grid w-full max-w-6xl gap-4 px-3 sm:px-4 lg:grid-cols-12">
             <Card className="glass-panel border-white/45 lg:col-span-12">
               <CardContent className="space-y-3 p-4 sm:p-5">
