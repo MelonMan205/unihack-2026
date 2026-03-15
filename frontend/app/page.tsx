@@ -1004,9 +1004,9 @@ export default function HomePage() {
                   </Link>
                 </div>
                 <p className="text-sm text-zinc-600">@{dashboardProfile?.username?.trim() || "no-username"}</p>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2.5">
                   {(dashboardProfile?.interests ?? []).slice(0, 10).map((interest) => (
-                    <Badge key={interest} className="bg-yellow-300 text-zinc-900">
+                    <Badge key={interest}>
                       {interest.toLowerCase()}
                     </Badge>
                   ))}
@@ -1034,7 +1034,7 @@ export default function HomePage() {
                         </p>
                         <p className="text-xs text-zinc-600">@{(friend.other_username?.trim() || "unknown").toLowerCase()}</p>
                       </div>
-                      {friend.is_close_friend ? <Badge className="bg-yellow-300 text-zinc-900">close</Badge> : null}
+                      {friend.is_close_friend ? <Badge>close</Badge> : null}
                     </div>
                   ))}
                   {dashboardFriends.length === 0 ? <p className="text-sm text-zinc-600">no friends yet</p> : null}
@@ -1046,14 +1046,14 @@ export default function HomePage() {
               <CardContent className="space-y-3 p-4 sm:p-5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-semibold tracking-[0.1em] text-zinc-500">going</p>
-                  <Badge className="bg-yellow-300 text-zinc-900">{dashboardGoingEvents.length}</Badge>
+                  <Badge>{dashboardGoingEvents.length}</Badge>
                 </div>
                 <div className="space-y-2">
                   {dashboardGoingEvents.slice(0, 6).map((eventRow) => (
                     <article key={eventRow.eventId} className="rounded-xl border border-zinc-200/80 bg-white/80 p-3">
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-sm font-semibold text-zinc-900">{eventRow.title.toLowerCase()}</p>
-                        <Badge className="bg-yellow-300 text-zinc-900">
+                        <Badge>
                           {eventRow.status === "checked_in" ? "checked in" : "going"}
                         </Badge>
                       </div>
@@ -1428,7 +1428,7 @@ export default function HomePage() {
               </p>
 
               <div className="mt-5 flex flex-wrap items-center gap-2">
-                <Badge className="bg-yellow-400 text-zinc-900">{selectedEvent.timeLabel}</Badge>
+                <Badge>{selectedEvent.timeLabel}</Badge>
                 <Badge variant="secondary" className="bg-white/75 text-zinc-700">
                   {distanceInKm(selectedEvent.location, userLocation).toFixed(1)} km away
                 </Badge>
