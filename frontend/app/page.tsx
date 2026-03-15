@@ -5,7 +5,6 @@ import Image from "next/image";
 import Link from "next/link";
 import {
   type CSSProperties,
-  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -15,16 +14,10 @@ import {
 } from "react";
 import {
   Crosshair,
-  Dumbbell,
   ExternalLink,
-  Grid2x2,
   MapPin,
-  Palette,
   Search,
   Sparkles,
-  UtensilsCrossed,
-  Users2,
-  Waves,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -73,14 +66,6 @@ const FEATURE_FLAGS = {
   recommendedMode: true,
   viewportQueryMode: true,
 } as const;
-
-const categoryIcons: Record<Category, ReactNode> = {
-  music: <Waves className="h-[16px] w-[16px] stroke-[1.85]" />,
-  food: <UtensilsCrossed className="h-[16px] w-[16px] stroke-[1.85]" />,
-  fitness: <Dumbbell className="h-[16px] w-[16px] stroke-[1.85]" />,
-  social: <Users2 className="h-[16px] w-[16px] stroke-[1.85]" />,
-  arts: <Palette className="h-[16px] w-[16px] stroke-[1.85]" />,
-};
 
 function mergeLiveAndMockEvents(liveEvents: EventPin[]): EventPin[] {
   const allEvents = [...liveEvents];
@@ -284,6 +269,7 @@ export default function HomePage() {
   const [locationLabel, setLocationLabel] = useState("locating you...");
   const [isLocationReady, setIsLocationReady] = useState(false);
   const [sheetImageLoadError, setSheetImageLoadError] = useState(false);
+  const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const friendOverlayDebounceRef = useRef<number | null>(null);
   const [, startTransition] = useTransition();
 
@@ -693,6 +679,94 @@ export default function HomePage() {
     [setViewport],
   );
 
+  const filterPanel = (
+    <Card className="glass-panel pointer-events-auto w-[270px] border-white/35">
+      <CardContent className="space-y-3 p-3">
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={discoveryMode === "recommended" ? "default" : "outline"}
+            onClick={() => setDiscoveryMode("recommended")}
+            className={`icon-filter-btn h-9 text-xs ${
+              discoveryMode === "recommended" ? "icon-filter-btn--active" : ""
+            }`}
+          >
+            <Sparkles className="mr-1 h-3.5 w-3.5" />
+            Recommended
+          </Button>
+          <Button
+            type="button"
+            variant={discoveryMode === "all" ? "default" : "outline"}
+            onClick={() => setDiscoveryMode("all")}
+            className={`icon-filter-btn h-9 text-xs ${discoveryMode === "all" ? "icon-filter-btn--active" : ""}`}
+          >
+            All
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-1.5">
+          {FILTERS.map((filter) => (
+            <Button
+              key={filter.value}
+              type="button"
+              variant={selectedCategory === filter.value ? "default" : "outline"}
+              size="sm"
+              onClick={() => setSelectedCategory(filter.value)}
+              className={`icon-filter-btn h-8 px-2 text-[11px] ${
+                selectedCategory === filter.value ? "icon-filter-btn--active" : ""
+              }`}
+            >
+              {filter.label}
+            </Button>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          <select
+            value={sportsFilter}
+            onChange={(event) => setSportsFilter(event.target.value as SportsFilter)}
+            className="h-9 w-full rounded-[11px] border border-zinc-300 bg-white px-2 text-xs text-zinc-700"
+          >
+            <option value="all">All events</option>
+            <option value="sports_only">Sports only</option>
+          </select>
+          <select
+            value={alcoholFilter}
+            onChange={(event) => setAlcoholFilter(event.target.value as AlcoholFilter)}
+            className="h-9 w-full rounded-[11px] border border-zinc-300 bg-white px-2 text-xs text-zinc-700"
+          >
+            <option value="all">Alcohol: all</option>
+            <option value="alcoholic">Alcoholic</option>
+            <option value="non_alcoholic">Non alcoholic</option>
+          </select>
+          <select
+            value={priceFilter}
+            onChange={(event) => setPriceFilter(event.target.value as PriceFilter)}
+            className="h-9 w-full rounded-[11px] border border-zinc-300 bg-white px-2 text-xs text-zinc-700"
+          >
+            <option value="all">Price: all</option>
+            <option value="free">Free</option>
+            <option value="budget">Budget</option>
+            <option value="mid">Mid</option>
+            <option value="premium">Premium</option>
+          </select>
+          <select
+            value={subcategoryFilter}
+            onChange={(event) => setSubcategoryFilter(event.target.value)}
+            className="h-9 w-full rounded-[11px] border border-zinc-300 bg-white px-2 text-xs text-zinc-700"
+          >
+            <option value="all">All tags</option>
+            {allSubcategories.map((subcategory) => (
+              <option key={subcategory} value={subcategory}>
+                {subcategory}
+              </option>
+            ))}
+          </select>
+        </div>
+      </CardContent>
+    </Card>
+  );
+
   return (
     <main className="relative h-[100dvh] min-h-[100svh] w-full overflow-hidden bg-[#eef1f5] text-zinc-900">
       {isLocationReady ? (
@@ -719,28 +793,21 @@ export default function HomePage() {
       )}
 
       <div className="pointer-events-none absolute left-4 top-1/2 z-[1200] hidden -translate-y-1/2 lg:block">
-        <div className="glass-panel flex w-[68px] flex-col items-center gap-2 rounded-[20px] p-2">
-          {FILTERS.map((filter) => (
-            <Button
-              key={filter.value}
-              variant={selectedCategory === filter.value ? "default" : "outline"}
-              size="sm"
-              onClick={() => setSelectedCategory(filter.value)}
-              className={`icon-filter-btn pointer-events-auto h-11 w-11 rounded-[14px] px-0 ${
-                selectedCategory === filter.value ? "icon-filter-btn--active" : ""
-              }`}
-              aria-label={filter.label}
-              title={filter.label}
-            >
-              {filter.value === "all" ? (
-                <Grid2x2 className="h-[16px] w-[16px] stroke-[1.85]" />
-              ) : (
-                categoryIcons[filter.value]
-              )}
-            </Button>
-          ))}
-        </div>
+        {filterPanel}
       </div>
+
+      <Sheet open={isMobileFilterOpen} onOpenChange={setIsMobileFilterOpen}>
+        <SheetContent
+          side="left"
+          className="z-[1500] w-[86vw] max-w-[320px] border border-white/85 bg-white/92 px-3 pb-4 pt-8 backdrop-blur-3xl"
+        >
+          <SheetHeader>
+            <SheetTitle className="text-base">Filters</SheetTitle>
+            <SheetDescription>Clean controls for discovery mode and event filters.</SheetDescription>
+          </SheetHeader>
+          <div className="mt-3">{filterPanel}</div>
+        </SheetContent>
+      </Sheet>
 
       <div
         className={`pointer-events-none absolute inset-x-0 bottom-0 z-[1200] pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-all duration-200 sm:pb-4 ${
@@ -831,26 +898,12 @@ export default function HomePage() {
                   </Button>
                   <Button
                     type="button"
-                    variant={discoveryMode === "recommended" ? "default" : "outline"}
+                    variant="outline"
                     size="sm"
-                    onClick={() => setDiscoveryMode("recommended")}
-                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      discoveryMode === "recommended" ? "icon-filter-btn--active" : ""
-                    }`}
+                    onClick={() => setIsMobileFilterOpen(true)}
+                    className="icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs lg:hidden"
                   >
-                    <Sparkles className="mr-1 h-3.5 w-3.5" />
-                    recommended
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={discoveryMode === "all" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setDiscoveryMode("all")}
-                    className={`icon-filter-btn h-8 rounded-[11px] px-2.5 text-[11px] sm:h-9 sm:rounded-[12px] sm:px-3 sm:text-xs ${
-                      discoveryMode === "all" ? "icon-filter-btn--active" : ""
-                    }`}
-                  >
-                    all
+                    filters
                   </Button>
                 </div>
               </div>
@@ -922,65 +975,6 @@ export default function HomePage() {
                 ) : null}
               </div>
 
-              <div className="pointer-events-auto grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                <select
-                  value={sportsFilter}
-                  onChange={(event) => setSportsFilter(event.target.value as SportsFilter)}
-                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
-                >
-                  <option value="all">all events</option>
-                  <option value="sports_only">sports only</option>
-                </select>
-                <select
-                  value={alcoholFilter}
-                  onChange={(event) => setAlcoholFilter(event.target.value as AlcoholFilter)}
-                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
-                >
-                  <option value="all">alcohol: all</option>
-                  <option value="alcoholic">alcoholic</option>
-                  <option value="non_alcoholic">non alcoholic</option>
-                </select>
-                <select
-                  value={priceFilter}
-                  onChange={(event) => setPriceFilter(event.target.value as PriceFilter)}
-                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
-                >
-                  <option value="all">price: all</option>
-                  <option value="free">free</option>
-                  <option value="budget">budget</option>
-                  <option value="mid">mid</option>
-                  <option value="premium">premium</option>
-                </select>
-                <select
-                  value={subcategoryFilter}
-                  onChange={(event) => setSubcategoryFilter(event.target.value)}
-                  className="h-9 rounded-[11px] border border-zinc-300 bg-white px-2 text-[11px] text-zinc-700 sm:h-10 sm:text-xs"
-                >
-                  <option value="all">all tags</option>
-                  {allSubcategories.map((subcategory) => (
-                    <option key={subcategory} value={subcategory}>
-                      {subcategory}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="no-scrollbar flex snap-x snap-mandatory gap-1.5 overflow-x-auto pb-1 pt-0.5 lg:hidden">
-                {FILTERS.map((filter) => (
-                  <Button
-                    key={filter.value}
-                    variant={selectedCategory === filter.value ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSelectedCategory(filter.value)}
-                    className={`icon-filter-btn h-9 snap-start px-3 text-[11px] sm:h-10 sm:px-4 sm:text-sm ${
-                      selectedCategory === filter.value ? "icon-filter-btn--active" : ""
-                    }`}
-                  >
-                    {filter.value !== "all" ? categoryIcons[filter.value] : null}
-                    {filter.label.toLowerCase()}
-                  </Button>
-                ))}
-              </div>
               <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
                 <div className="pointer-events-auto relative min-w-0 flex-1 lg:min-w-[220px]">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
