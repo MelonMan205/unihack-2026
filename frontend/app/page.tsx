@@ -51,7 +51,6 @@ const FILTERS: { label: string; value: Category | "all" }[] = [
 type TimeWindow = "3h" | "12h" | "1d" | "3d" | "1w" | "any";
 type DiscoveryMode = "recommended" | "all";
 type SportsFilter = "all" | "sports_only";
-type AlcoholFilter = "all" | "alcoholic" | "non_alcoholic";
 type PriceFilter = "all" | "free" | "budget" | "mid" | "premium";
 type ViewMode = "map" | "dashboard";
 type Viewport = { north: number; south: number; east: number; west: number; zoom: number };
@@ -78,6 +77,7 @@ type GoingAttendanceRow = {
 type DashboardProfileRow = {
   display_name: string | null;
   username: string | null;
+  avatar_url: string | null;
   interests: string[] | null;
 };
 
@@ -302,7 +302,6 @@ export default function HomePage() {
   const [isRadiusEnabled, setIsRadiusEnabled] = useState(false);
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("1d");
   const [sportsFilter, setSportsFilter] = useState<SportsFilter>("all");
-  const [alcoholFilter, setAlcoholFilter] = useState<AlcoholFilter>("all");
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("all");
   const [subcategoryFilter, setSubcategoryFilter] = useState("all");
   const [openDiscoverControl, setOpenDiscoverControl] = useState<"radius" | "time" | null>(null);
@@ -419,7 +418,7 @@ export default function HomePage() {
     }
     client
       .from("profiles")
-      .select("display_name,username,interests")
+      .select("display_name,username,avatar_url,interests")
       .eq("id", authUserId)
       .maybeSingle()
       .then(({ data }) => {
@@ -428,6 +427,7 @@ export default function HomePage() {
         setDashboardProfile({
           display_name: data?.display_name ?? null,
           username: data?.username ?? null,
+          avatar_url: data?.avatar_url ?? null,
           interests,
         });
       });
@@ -686,14 +686,6 @@ export default function HomePage() {
     () =>
       searchedEvents.filter((event) => {
         if (sportsFilter === "sports_only" && !event.isSports) return false;
-        if (alcoholFilter !== "all") {
-          if (alcoholFilter === "alcoholic" && event.alcoholPolicy !== "alcoholic" && event.alcoholPolicy !== "mixed") {
-            return false;
-          }
-          if (alcoholFilter === "non_alcoholic" && event.alcoholPolicy !== "non_alcoholic") {
-            return false;
-          }
-        }
         if (priceFilter !== "all" && event.priceTier !== priceFilter) return false;
         if (subcategoryFilter !== "all") {
           const eventTags = collectEventTags(event);
@@ -701,7 +693,7 @@ export default function HomePage() {
         }
         return true;
       }),
-    [searchedEvents, sportsFilter, alcoholFilter, priceFilter, subcategoryFilter],
+    [searchedEvents, sportsFilter, priceFilter, subcategoryFilter],
   );
 
   const timeWindowIndex = TIME_WINDOWS.indexOf(timeWindow);
@@ -878,15 +870,6 @@ export default function HomePage() {
             <option value="sports_only">Sports only</option>
           </select>
           <select
-            value={alcoholFilter}
-            onChange={(event) => setAlcoholFilter(event.target.value as AlcoholFilter)}
-            className="h-9 w-full rounded-[11px] border border-zinc-300 bg-white px-2 text-xs text-zinc-700"
-          >
-            <option value="all">Alcohol: all</option>
-            <option value="alcoholic">Alcoholic</option>
-            <option value="non_alcoholic">Non alcoholic</option>
-          </select>
-          <select
             value={priceFilter}
             onChange={(event) => setPriceFilter(event.target.value as PriceFilter)}
             className="h-9 w-full rounded-[11px] border border-zinc-300 bg-white px-2 text-xs text-zinc-700"
@@ -989,13 +972,29 @@ export default function HomePage() {
           <div className="h-[100dvh] min-h-[100svh] w-full bg-[#f8f3e8]" />
         )
       ) : (
-        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-44 pt-24">
+        <div className="absolute inset-x-0 top-0 z-[900] h-[100dvh] overflow-y-auto pb-[calc(22rem+env(safe-area-inset-bottom))] pt-24 sm:pb-[calc(19rem+env(safe-area-inset-bottom))]">
           <div className="mx-auto grid w-full max-w-6xl gap-4 px-3 sm:px-4 lg:grid-cols-12">
             <Card className="glass-panel border-white/45 lg:col-span-12">
               <CardContent className="space-y-3 p-4 sm:p-5">
                 <p className="text-xs font-semibold tracking-[0.1em] text-zinc-500">profile</p>
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="text-xl font-semibold text-zinc-900">{dashboardName}</h2>
+                  <div className="flex items-center gap-3">
+                    {dashboardProfile?.avatar_url ? (
+                      <Image
+                        src={dashboardProfile.avatar_url}
+                        alt="Profile avatar"
+                        width={40}
+                        height={40}
+                        unoptimized
+                        className="h-10 w-10 rounded-full border border-zinc-200 object-cover"
+                      />
+                    ) : (
+                      <div className="grid h-10 w-10 place-items-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
+                        {dashboardName.slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
+                    <h2 className="text-xl font-semibold text-zinc-900">{dashboardName}</h2>
+                  </div>
                   <Link
                     href="/profile/settings"
                     className="icon-filter-btn icon-filter-btn--active rounded-full border border-zinc-300 bg-white px-3 py-1 text-xs text-zinc-900"

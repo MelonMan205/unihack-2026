@@ -53,6 +53,7 @@ type SupabaseEventRow = {
   venue: string | null;
   time_label: string;
   start_at: string;
+  end_at: string | null;
   description: string | null;
   source_url: string;
   source: string;
@@ -640,6 +641,7 @@ function toSupabaseRow(event: NormalizedEvent): SupabaseEventRow {
     venue: event.venue,
     time_label: event.timeLabel,
     start_at: event.startAtIso,
+    end_at: null,
     description: event.description,
     source_url: event.sourceUrl,
     source: event.source,
@@ -656,21 +658,58 @@ function toSupabaseRow(event: NormalizedEvent): SupabaseEventRow {
   };
 }
 
-async function eventAlreadyExists(sourceUrl: string, env: ResolvedEnv): Promise<boolean> {
-  const query = new URLSearchParams({ select: "id", source_url: `eq.${sourceUrl}`, limit: "1" });
-  const res = await fetch(`${env.supabaseUrl}/rest/v1/events?${query.toString()}`, {
+function normalizeComparableText(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+async function eventAlreadyExists(row: SupabaseEventRow, env: ResolvedEnv): Promise<boolean> {
+  const sourceUrlQuery = new URLSearchParams({ select: "id", source_url: `eq.${row.source_url}`, limit: "1" });
+  const sourceRes = await fetch(`${env.supabaseUrl}/rest/v1/events?${sourceUrlQuery.toString()}`, {
     headers: { apikey: env.supabaseServiceRoleKey, Authorization: `Bearer ${env.supabaseServiceRoleKey}` },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Supabase exists-check failed ${res.status}: ${clip(text, 400)}`);
+  if (!sourceRes.ok) {
+    const text = await sourceRes.text();
+    throw new Error(`Supabase exists-check failed ${sourceRes.status}: ${clip(text, 400)}`);
   }
-  const rows = (await res.json()) as Array<{ id: string }>;
-  return Array.isArray(rows) && rows.length > 0;
+  const sourceRows = (await sourceRes.json()) as Array<{ id: string }>;
+  if (Array.isArray(sourceRows) && sourceRows.length > 0) {
+    return true;
+  }
+
+  if (!row.start_at) {
+    return false;
+  }
+
+  const duplicateQuery = new URLSearchParams({
+    select: "id,title,location,created_by",
+    start_at: `eq.${row.start_at}`,
+    limit: "50",
+  });
+  const duplicateRes = await fetch(`${env.supabaseUrl}/rest/v1/events?${duplicateQuery.toString()}`, {
+    headers: { apikey: env.supabaseServiceRoleKey, Authorization: `Bearer ${env.supabaseServiceRoleKey}` },
+  });
+  if (!duplicateRes.ok) {
+    const text = await duplicateRes.text();
+    throw new Error(`Supabase duplicate-check failed ${duplicateRes.status}: ${clip(text, 400)}`);
+  }
+  const duplicateRows = (await duplicateRes.json()) as Array<{
+    id: string;
+    title: string | null;
+    location: string | null;
+    created_by: string | null;
+  }>;
+  const incomingTitle = normalizeComparableText(row.title);
+  const incomingLocation = normalizeComparableText(row.location);
+  return duplicateRows.some(
+    (candidate) =>
+      candidate.created_by === null &&
+      normalizeComparableText(candidate.title) === incomingTitle &&
+      normalizeComparableText(candidate.location) === incomingLocation
+  );
 }
 
 async function insertEventRow(row: SupabaseEventRow, env: ResolvedEnv): Promise<boolean> {
-  if (await eventAlreadyExists(row.source_url, env)) return false;
+  if (await eventAlreadyExists(row, env)) return false;
   const res = await fetch(`${env.supabaseUrl}/rest/v1/events`, {
     method: "POST",
     headers: {
@@ -691,7 +730,10 @@ async function insertEventRow(row: SupabaseEventRow, env: ResolvedEnv): Promise<
 async function cleanupExpiredEvents(env: ResolvedEnv, progress: ProgressEntry[]): Promise<number> {
   const now = new Date().toISOString();
   pushProgress(progress, { stage: "events.cleanup", status: "info", message: `Deleting events older than ${now}` });
-  const deleteUrl = `${env.supabaseUrl}/rest/v1/events?start_at=lt.${encodeURIComponent(now)}`;
+  const query = new URLSearchParams({
+    or: `(and(end_at.not.is.null,end_at.lt.${now}),and(end_at.is.null,start_at.lt.${now}))`,
+  });
+  const deleteUrl = `${env.supabaseUrl}/rest/v1/events?${query.toString()}`;
   const res = await fetch(deleteUrl, {
     method: "DELETE",
     headers: {
@@ -702,8 +744,8 @@ async function cleanupExpiredEvents(env: ResolvedEnv, progress: ProgressEntry[])
   });
   if (!res.ok) {
     const text = await res.text();
-    if (text.includes("start_at")) {
-      pushProgress(progress, { stage: "events.cleanup", status: "warn", message: "Skipping expired-events cleanup because start_at is not available" });
+    if (text.includes("start_at") || text.includes("end_at")) {
+      pushProgress(progress, { stage: "events.cleanup", status: "warn", message: "Skipping expired-events cleanup because start_at/end_at is not available" });
       return 0;
     }
     throw new Error(`Supabase cleanup failed ${res.status}: ${clip(text, 400)}`);
@@ -790,6 +832,11 @@ async function processSourceUrl(
         if (!dateTime) {
           invalid.push({ sourceUrl, eventUrl, reason: "invalid_date_or_time", locationRaw: parsed.location, parsed });
           warnings.push(`${sourceUrl} :: invalid_date_or_time`);
+          continue;
+        }
+        if (dateTime.epochMs < Date.now()) {
+          invalid.push({ sourceUrl, eventUrl, reason: "event_already_ended", locationRaw: parsed.location, parsed });
+          warnings.push(`${sourceUrl} :: event_already_ended`);
           continue;
         }
 

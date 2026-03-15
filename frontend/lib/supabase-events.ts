@@ -15,6 +15,7 @@ type SupabaseEventRow = {
   crowd_label: string | null;
   tags: string[] | null;
   start_at: string | null;
+  end_at: string | null;
   price_tier: "free" | "budget" | "mid" | "premium" | "unknown" | null;
   alcohol_policy: "alcoholic" | "non_alcoholic" | "mixed" | "unknown" | null;
   is_sports: boolean | null;
@@ -180,11 +181,13 @@ function mapRowToEventPin(row: SupabaseEventRow, index: number): EventPin {
 }
 
 export async function fetchEventsFromSupabase(client: SupabaseClient): Promise<EventPin[]> {
+  const nowIso = new Date().toISOString();
   const { data, error } = await client
     .from("events")
     .select(
-      "id,title,venue,time_label,start_at,description,source_url,photo_url,location,category,spontaneity_score,crowd_label,tags,price_tier,alcohol_policy,is_sports,subcategories,created_at,event_crowd_forecasts(forecast_label,confidence)",
+      "id,title,venue,time_label,start_at,end_at,description,source_url,photo_url,location,category,spontaneity_score,crowd_label,tags,price_tier,alcohol_policy,is_sports,subcategories,created_at,event_crowd_forecasts(forecast_label,confidence)",
     )
+    .or(`end_at.gte.${nowIso},and(end_at.is.null,start_at.gte.${nowIso}),and(end_at.is.null,start_at.is.null)`)
     .order("created_at", { ascending: false })
     .limit(200)
     .returns<SupabaseEventRow[]>();

@@ -7,5 +7,5 @@ export function middleware(_request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next|favicon.ico|haps-logo.svg|api).*)"],
+  matcher: ["/((?!_next|favicon.ico|haps-logo.svg|manifest.webmanifest|api).*)"],
 };

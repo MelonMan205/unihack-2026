@@ -471,22 +471,24 @@ body {
   background: linear-gradient(to top, rgba(15, 23, 42, 0.42), rgba(15, 23, 42, 0.08) 55%, transparent);
 }
 
-.photo-pin-label {
+.photo-pin-badge {
   position: absolute;
   left: 6px;
   bottom: 6px;
-  min-width: 26px;
-  height: 18px;
-  padding: 0 6px;
+  width: 20px;
+  height: 20px;
   display: grid;
   place-items: center;
-  border-radius: 9px;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  font-weight: 600;
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.9);
-  color: #111827;
+}
+
+.photo-pin-badge img {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  object-fit: cover;
 }
 
 .photo-pin-tip {
@@ -711,13 +713,11 @@ body {
     border-width: 1.5px;
   }
 
-  .photo-pin-label {
+  .photo-pin-badge {
     left: 4px;
     bottom: 4px;
-    min-width: 22px;
-    height: 15px;
-    font-size: 8px;
-    padding: 0 4px;
+    width: 16px;
+    height: 16px;
   }
 
   .photo-pin-tip {
